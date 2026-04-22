@@ -1,0 +1,69 @@
+{
+    "name": "bazel-jdt-bridge",
+    "displayName": "Bazel Java Support",
+    "description": "Bazel Java dependency resolver for Eclipse JDT.LS",
+    "version": "0.1.0",
+    "publisher": "bazel-jdt",
+    "engines": {
+        "vscode": "^1.85.0"
+    },
+    "categories": ["Programming Languages", "Other"],
+    "activationEvents": [
+        "onLanguage:java",
+        "workspaceContains:WORKSPACE",
+        "workspaceContains:WORKSPACE.bazel"
+    ],
+    "main": "./dist/extension.js",
+    "contributes": {
+        "commands": [
+            {
+                "command": "bazel-jdt.importProject",
+                "title": "Bazel: Import Project"
+            },
+            {
+                "command": "bazel-jdt.syncProject",
+                "title": "Bazel: Sync Project"
+            },
+            {
+                "command": "bazel-jdt.cleanCache",
+                "title": "Bazel: Clean Cache"
+            }
+        ],
+        "configuration": {
+            "title": "Bazel JDT Bridge",
+            "properties": {
+                "bazel-jdt.bazelPath": {
+                    "type": "string",
+                    "default": "bazel",
+                    "description": "Path to Bazel binary"
+                },
+                "bazel-jdt.syncOnSave": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Auto-sync when BUILD files are saved"
+                },
+                "bazel-jdt.cacheDir": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Cache directory"
+                }
+            }
+        },
+        "javaExtensions": [
+            "./server/com.bazel.jdt.jar"
+        ]
+    },
+    "extensionDependencies": [
+        "redhat.java"
+    ],
+    "devDependencies": {
+        "@types/vscode": "^1.85.0",
+        "@types/node": "^18.19.0",
+        "typescript": "^5.4.0",
+        "esbuild": "^0.20.0"
+    },
+    "scripts": {
+        "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node18",
+        "watch": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node18 --watch"
+    }
+}

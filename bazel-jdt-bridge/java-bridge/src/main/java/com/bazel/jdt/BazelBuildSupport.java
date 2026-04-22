@@ -6,7 +6,8 @@ import java.util.List;
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IResource;
 import org.eclipse.core.runtime.IProgressMonitor;
-import org.eclipse.jdt.ls.core.internal.IBuildSupport;
+import org.eclipse.jdt.ls.core.internal.managers.IBuildSupport;
+import org.eclipse.jdt.ls.core.internal.managers.ProjectsManager.CHANGE_TYPE;
 
 public class BazelBuildSupport implements IBuildSupport {
     private static final List<String> WATCH_PATTERNS = Arrays.asList(

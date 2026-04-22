@@ -16,7 +16,7 @@ public class BazelClasspathContainer implements IClasspathContainer {
 
     public BazelClasspathContainer(String[] rawEntries) {
         List<IClasspathEntry> parsed = new ArrayList<>();
-        if (rawEntries != null) {
+        if (rawEntries == null) {
             this.entries = parsed.toArray(new IClasspathEntry[0]);
             return;
         }

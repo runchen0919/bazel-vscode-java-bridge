@@ -5,26 +5,15 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.eclipse.core.resources.IProject;
-import org.eclipse.core.resources.IProjectDescription;
-import org.eclipse.core.resources.IWorkspace;
 import org.eclipse.core.resources.IWorkspaceRoot;
+import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IProgressMonitor;
-import org.eclipse.core.runtime.Path;
-import org.eclipse.jdt.ls.core.internal.managers.ProjectsManager;
-import org.eclipse.jdt.ls.core.AbstractProjectImporter;
-
-import com.bazel.jdt.BazelBridge;
-import com.bazel.jdt.BazelClasspathContainer;
-import com.bazel.jdt.BazelClasspathManager;
+import org.eclipse.core.runtime.IStatus;
+import org.eclipse.core.runtime.Status;
+import org.eclipse.jdt.ls.core.internal.AbstractProjectImporter;
 
 public class BazelProjectImporter extends AbstractProjectImporter {
-    private File rootFolder;
-
-    @Override
-    public void initialize(File rootFolder) {
-        this.rootFolder = rootFolder;
-    }
 
     @Override
     public boolean applies(IProgressMonitor monitor) {
@@ -47,28 +36,33 @@ public class BazelProjectImporter extends AbstractProjectImporter {
             targets = bridge.discoverTargets();
         } catch (Exception e) {
             throw new CoreException(
-                org.eclipse.core.runtime.Status.error("Failed to discover targets", e),
-                "Failed to discover Bazel targets: " + e.getMessage()
+                new Status(IStatus.ERROR, "com.bazel.jdt",
+                    "Failed to discover Bazel targets: " + e.getMessage(), e)
             );
         }
 
         if (targets == null || targets.length == 0) return;
 
-        IWorkspace workspace = ResourcesPlugin.getWorkspace();
-        IWorkspaceRoot workspaceRoot = ResourcesPlugin.getWorkspaceRoot();
+        IWorkspaceRoot workspaceRoot = ResourcesPlugin.getWorkspace().getRoot();
 
-        List<IProject> createdProjects = new ArrayList<>();
         for (String targetLabel : targets) {
             try {
                 String packageName = extractPackageName(targetLabel);
-                IProject project = createEclipseProject(workspace, workspaceRoot, packageName, targetLabel);
-                if (project != null) {
-                    createdProjects.add(project);
-                    BazelClasspathManager.setClasspathContainer(project, targetLabel);
+                IProject project = workspaceRoot.getProject(packageName);
+                if (!project.exists()) {
+                    project.create(monitor);
                 }
+                if (!project.isOpen()) {
+                    project.open(monitor);
+                }
+                BazelClasspathManager.setClasspathContainer(project, targetLabel);
             } catch (Exception e) {
             }
         }
+    }
+
+    @Override
+    public void reset() {
     }
 
     private String extractPackageName(String targetLabel) {
@@ -77,11 +71,5 @@ public class BazelProjectImporter extends AbstractProjectImporter {
             return targetLabel.substring(2, colonIndex);
         }
         return targetLabel.substring(2);
-    }
-
-    private IProject createEclipseProject(IWorkspace workspace, IWorkspaceRoot workspaceRoot, String packageName, String targetLabel) throws CoreException {
-        IProjectDescription description = workspace.newProjectDescription(packageName);
-        IProject project = workspaceRoot.getProject(description);
-        return project;
     }
 }

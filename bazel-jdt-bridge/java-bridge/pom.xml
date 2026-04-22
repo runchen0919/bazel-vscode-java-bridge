@@ -7,7 +7,7 @@
     <groupId>com.bazel.jdt</groupId>
     <artifactId>bazel-jdt-bridge</artifactId>
     <version>0.1.0</version>
-    <packaging>bundle</packaging>
+    <packaging>jar</packaging>
 
     <name>Bazel JDT Bridge</name>
     <description>Bazel Java dependency resolver for Eclipse JDT.LS</description>
@@ -21,7 +21,7 @@
     <repositories>
         <repository>
             <id>eclipse</id>
-            <url>https://repo.eclipse.org/content/repositories/eclipse-releases/</url>
+            <url>https://repo.eclipse.org/content/repositories/releases/</url>
         </repository>
     </repositories>
 
@@ -35,7 +35,7 @@
         <dependency>
             <groupId>org.eclipse.jdt.ls</groupId>
             <artifactId>org.eclipse.jdt.ls.core</artifactId>
-            <version>1.38.0</version>
+            <version>1.38.0.20240801140102</version>
             <scope>provided</scope>
         </dependency>
         <dependency>

@@ -20,12 +20,42 @@ public class BazelClasspathManager {
             BazelClasspathContainer container = new BazelClasspathContainer(rawEntries);
             JavaCore.setClasspathContainer(
                 BazelClasspathContainer.CONTAINER_PATH,
-                new IProject[]{project},
+                new org.eclipse.jdt.core.IJavaProject[]{JavaCore.create(project)},
                 new IClasspathContainer[]{container},
                 null
             );
         } catch (Exception e) {
             // Silently ignore classpath errors — JDT.LS will retry
+        }
+    }
+
+    /**
+     * Refresh classpath for all open Bazel projects.
+     * Called by BazelCommandHandler for import/sync commands.
+     */
+    public static void refreshClasspath() {
+        try {
+            org.eclipse.core.resources.IWorkspace workspace =
+                org.eclipse.core.resources.ResourcesPlugin.getWorkspace();
+            IProject[] projects = workspace.getRoot().getProjects();
+
+            BazelBridge bridge = BazelBridge.getInstance();
+            String[] targets = bridge.discoverTargets();
+            if (targets == null) return;
+
+            for (IProject project : projects) {
+                if (!project.isOpen()) continue;
+                try {
+                    if (!project.hasNature("org.eclipse.jdt.core.javanature")) continue;
+                } catch (CoreException e) {
+                    continue;
+                }
+                for (String targetLabel : targets) {
+                    setClasspathContainer(project, targetLabel);
+                }
+            }
+        } catch (Exception e) {
+            // Silently ignore refresh errors
         }
     }
 

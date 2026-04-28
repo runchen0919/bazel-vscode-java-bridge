@@ -48,7 +48,7 @@ public final class NativeLoader {
 
     private static String detectOs(String os) {
         if (os.contains("linux")) return "linux";
-        if (os.contains("mac") || os.contains("darwin")) return "macos";
+        if (os.contains("mac") || os.contains("darwin")) return "darwin";
         if (os.contains("win")) return "windows";
         throw new UnsupportedOperationException("Unsupported OS: " + os);
     }
@@ -67,7 +67,7 @@ public final class NativeLoader {
 
     static String getLibraryFileName(String platform) {
         if (platform.startsWith("linux")) return "lib" + LIB_NAME + ".so";
-        if (platform.startsWith("macos")) return "lib" + LIB_NAME + ".dylib";
+        if (platform.startsWith("darwin")) return "lib" + LIB_NAME + ".dylib";
         if (platform.startsWith("windows")) return LIB_NAME + ".dll";
         throw new UnsupportedOperationException("Unknown platform: " + platform);
     }

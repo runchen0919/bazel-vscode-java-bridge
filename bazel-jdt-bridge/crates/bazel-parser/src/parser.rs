@@ -223,9 +223,7 @@ impl BuildFileParser {
                 }
                 false
             }
-            ExprP::List(items) => items
-                .iter()
-                .any(|item| Self::contains_glob_or_variable(item)),
+            ExprP::List(items) => items.iter().any(Self::contains_glob_or_variable),
             ExprP::Identifier(_) => true,
             _ => false,
         }

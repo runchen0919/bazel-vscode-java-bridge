@@ -20,7 +20,7 @@ pub enum SyncState {
 /// Central state for the Bazel JDT bridge
 pub struct BazelJdtState {
     pub cache: BazelCache,
-    pub graph: DependencyGraph,
+    pub graph: Mutex<DependencyGraph>,
     pub parser: BuildFileParser,
     pub invoker: BazelInvoker,
     pub runtime: Runtime,
@@ -43,7 +43,7 @@ impl BazelJdtState {
 
         Ok(Self {
             cache,
-            graph,
+            graph: Mutex::new(graph),
             parser,
             invoker,
             runtime,
@@ -63,5 +63,22 @@ impl BazelJdtState {
 
     pub fn set_sync_state(&self, state: SyncState) {
         self.sync_state.store(state as i32, Ordering::SeqCst);
+    }
+
+    /// Parse all BUILD files in workspace and populate dependency graph.
+    /// Returns the number of BUILD files parsed.
+    pub fn populate_graph_from_build_files(&self) -> Result<usize, Box<dyn std::error::Error>> {
+        let build_files = crate::change_detector::collect_build_files(&self.workspace_root)?;
+        let mut parsed = Vec::new();
+        for bf in &build_files {
+            match self.parser.parse_file(bf) {
+                Ok(pf) => parsed.push(pf),
+                Err(e) => log::warn!("Failed to parse {}: {}", bf.display(), e),
+            }
+        }
+        let count = parsed.len();
+        let mut graph = self.graph.lock().unwrap_or_else(|e| e.into_inner());
+        graph.populate_from_parsed_batch(&parsed);
+        Ok(count)
     }
 }

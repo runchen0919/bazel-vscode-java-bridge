@@ -2,19 +2,14 @@ use crate::graph::{DependencyGraph, GraphError};
 use serde::{Deserialize, Serialize};
 
 /// Type of Bazel Java target for classpath computation
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TargetKind {
     JavaLibrary,
     JavaBinary,
     JavaTest,
     JavaImport,
+    #[default]
     Unknown,
-}
-
-impl Default for TargetKind {
-    fn default() -> Self {
-        TargetKind::Unknown
-    }
 }
 
 /// Type of classpath entry

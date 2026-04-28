@@ -6,7 +6,6 @@ use jni::objects::{JClass, JObject, JString};
 use jni::sys::{jint, jlong, jobjectArray, jsize};
 use jni::JNIEnv;
 
-/// Helper: create a Java String[] from a Vec<String>
 fn create_string_array(
     env: &mut JNIEnv,
     strings: &[String],
@@ -20,7 +19,6 @@ fn create_string_array(
     Ok(array.into_raw())
 }
 
-/// Initialize the native library
 #[no_mangle]
 pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeInitialize(
     mut env: JNIEnv,
@@ -82,7 +80,6 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeInitialize(
         }
     }
 
-    // Start file watcher for BUILD file changes
     let workspace_root = state.workspace_root.clone();
     match BuildFileWatcher::start(
         workspace_root,
@@ -91,7 +88,7 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeInitialize(
         }),
     ) {
         Ok(watcher) => {
-            *state.watcher.lock().unwrap() = Some(watcher);
+            *state.watcher.lock().unwrap_or_else(|e| e.into_inner()) = Some(watcher);
         }
         Err(e) => {
             log::warn!("Failed to start file watcher: {}", e);
@@ -101,7 +98,6 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeInitialize(
     Box::into_raw(Box::new(state)) as jlong
 }
 
-/// Shutdown and cleanup
 #[no_mangle]
 pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeShutdown(
     _env: JNIEnv,
@@ -113,14 +109,18 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeShutdown(
     }
     unsafe {
         let state = Box::from_raw(handle as *mut BazelJdtState);
-        if let Some(mut watcher) = state.watcher.lock().unwrap().take() {
+        if let Some(mut watcher) = state
+            .watcher
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
             watcher.stop();
         };
         drop(state);
     }
 }
 
-/// Discover Java targets in the workspace
 #[no_mangle]
 pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeDiscoverTargets(
     mut env: JNIEnv,
@@ -163,6 +163,11 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeDiscoverTargets(
         };
     }
 
+    match state.populate_graph_from_build_files() {
+        Ok(count) => log::info!("Populated dependency graph from {} BUILD files", count),
+        Err(e) => log::warn!("Failed to populate graph from BUILD files: {}", e),
+    }
+
     state.set_sync_state(SyncState::Idle);
     match create_string_array(&mut env, &targets) {
         Ok(arr) => arr,
@@ -170,7 +175,6 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeDiscoverTargets(
     }
 }
 
-/// Compute classpath for a target (cache-first)
 #[no_mangle]
 pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeComputeClasspath(
     mut env: JNIEnv,
@@ -193,7 +197,6 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeComputeClasspath(
 
     let state = unsafe { &*(handle as *const BazelJdtState) };
 
-    // Fast path: check cache first
     if let Ok(Some(cached_json)) = state.cache.get_classpath(&label) {
         match serde_json::from_str::<bazel_graph::ComputedClasspath>(&cached_json) {
             Ok(computed) => {
@@ -214,9 +217,11 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeComputeClasspath(
     }
 
     let target_kind = infer_target_kind(&label);
-    match bazel_graph::ComputedClasspath::compute_for(&state.graph, &label, target_kind) {
+    let graph = state.graph.lock().unwrap_or_else(|e| e.into_inner());
+    match bazel_graph::ComputedClasspath::compute_for(&graph, &label, target_kind) {
         Ok(computed) => {
             let entries = computed.to_pipe_delimited_entries();
+            drop(graph);
             if let Ok(json) = serde_json::to_string(&computed) {
                 let _ = state.cache.put_classpath(&label, &json);
             }
@@ -226,9 +231,13 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeComputeClasspath(
             }
         }
         Err(bazel_graph::GraphError::TargetNotFound { .. }) => {
+            drop(graph);
             match run_full_resolution(state, &label) {
                 Ok(computed) => {
                     let entries = computed.to_pipe_delimited_entries();
+                    if let Ok(json) = serde_json::to_string(&computed) {
+                        let _ = state.cache.put_classpath(&label, &json);
+                    }
                     match create_string_array(&mut env, &entries) {
                         Ok(arr) => arr,
                         Err(_) => std::ptr::null_mut(),
@@ -261,7 +270,6 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeComputeClasspath(
     }
 }
 
-/// Get current sync state
 #[no_mangle]
 pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeGetSyncState(
     _env: JNIEnv,
@@ -275,7 +283,6 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeGetSyncState(
     state.get_sync_state() as jint
 }
 
-/// Clean all cached data
 #[no_mangle]
 pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeCleanCache(
     mut env: JNIEnv,
@@ -325,10 +332,20 @@ fn run_full_resolution(
         ));
     }
 
-    Ok(bazel_graph::ComputedClasspath::compute_for(
-        &state.graph,
+    {
+        let mut graph = state.graph.lock().unwrap_or_else(|e| e.into_inner());
+        graph.populate_from_aspects(&aspect_results);
+        log::info!(
+            "Populated graph with {} aspect results for slow-path resolution",
+            aspect_results.len()
+        );
+    }
+
+    let graph = state.graph.lock().unwrap_or_else(|e| e.into_inner());
+    bazel_graph::ComputedClasspath::compute_for(
+        &graph,
         target_label,
         infer_target_kind(target_label),
     )
-    .map_err(|e| format!("Graph computation failed: {}", e))?)
+    .map_err(|e| format!("Graph computation failed: {}", e))
 }

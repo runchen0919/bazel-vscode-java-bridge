@@ -357,7 +357,9 @@ pub fn scan_workspace_changes(
     })
 }
 
-fn collect_build_files(root: &std::path::Path) -> Result<Vec<std::path::PathBuf>, std::io::Error> {
+pub fn collect_build_files(
+    root: &std::path::Path,
+) -> Result<Vec<std::path::PathBuf>, std::io::Error> {
     let mut files = Vec::new();
     collect_build_files_recursive(root, &mut files)?;
     Ok(files)

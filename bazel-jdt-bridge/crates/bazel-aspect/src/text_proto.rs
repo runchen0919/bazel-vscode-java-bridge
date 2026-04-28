@@ -75,6 +75,7 @@ enum Token {
 
 /// Lexer for tokenizing text proto input.
 struct Lexer<'a> {
+    #[expect(dead_code)]
     input: &'a str,
     chars: Vec<char>,
     position: usize,

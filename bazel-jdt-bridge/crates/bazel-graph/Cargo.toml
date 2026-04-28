@@ -11,3 +11,4 @@ serde_json.workspace = true
 thiserror.workspace = true
 log.workspace = true
 bazel-aspect = { path = "../bazel-aspect" }
+bazel-parser = { path = "../bazel-parser" }

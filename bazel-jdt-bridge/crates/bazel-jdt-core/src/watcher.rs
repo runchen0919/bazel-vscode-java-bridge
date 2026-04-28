@@ -131,7 +131,6 @@ impl Drop for BuildFileWatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn test_is_build_file() {

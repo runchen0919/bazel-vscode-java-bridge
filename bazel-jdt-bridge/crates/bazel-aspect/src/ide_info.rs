@@ -37,7 +37,7 @@ impl Default for TargetIdeInfo {
 }
 
 /// Java-specific information from aspect output
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct JavaIdeInfo {
     pub sources: Vec<ArtifactLocation>,
     pub jars: Vec<JarInfo>,
@@ -49,21 +49,6 @@ pub struct JavaIdeInfo {
     pub javac_options: Option<JavacOptions>,
 }
 
-impl Default for JavaIdeInfo {
-    fn default() -> Self {
-        Self {
-            sources: Vec::new(),
-            jars: Vec::new(),
-            generated_jars: Vec::new(),
-            compile_jars: Vec::new(),
-            runtime_jars: Vec::new(),
-            annotation_processors: Vec::new(),
-            source_jars: Vec::new(),
-            javac_options: None,
-        }
-    }
-}
-
 /// JAR artifact with metadata
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct JarInfo {
@@ -73,25 +58,13 @@ pub struct JarInfo {
 }
 
 /// File artifact location within Bazel workspace
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ArtifactLocation {
     pub relative_path: Option<String>,
     pub absolute_path: Option<String>,
     pub is_source: bool,
     pub is_external: bool,
     pub root_execution_path_fragment: Option<String>,
-}
-
-impl Default for ArtifactLocation {
-    fn default() -> Self {
-        Self {
-            relative_path: None,
-            absolute_path: None,
-            is_source: false,
-            is_external: false,
-            root_execution_path_fragment: None,
-        }
-    }
 }
 
 impl ArtifactLocation {

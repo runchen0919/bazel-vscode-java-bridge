@@ -108,6 +108,7 @@ name = "bazel-graph"
 version = "0.1.0"
 dependencies = [
  "bazel-aspect",
+ "bazel-parser",
  "log",
  "petgraph",
  "serde",

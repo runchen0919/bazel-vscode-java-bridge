@@ -152,7 +152,11 @@ impl BazelInvoker {
                     results.push(target_info);
                 }
                 Err(e) => {
-                    log::warn!("Failed to read aspect output file {}: {}", normalized_path, e);
+                    log::warn!(
+                        "Failed to read aspect output file {}: {}",
+                        normalized_path,
+                        e
+                    );
                     continue;
                 }
             }

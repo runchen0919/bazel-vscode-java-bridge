@@ -82,6 +82,16 @@ impl BuildFileWatcher {
         }
         self.debouncer.take();
     }
+
+    pub fn stop_nonblocking(&mut self) {
+        self.running.store(false, Ordering::Release);
+        self.debouncer.take();
+        if let Some(handle) = self.thread_handle.take() {
+            let _ = std::thread::spawn(move || {
+                let _ = handle.join();
+            });
+        }
+    }
 }
 
 fn filter_build_file_events(result: notify_debouncer_full::DebounceEventResult) -> Vec<PathBuf> {

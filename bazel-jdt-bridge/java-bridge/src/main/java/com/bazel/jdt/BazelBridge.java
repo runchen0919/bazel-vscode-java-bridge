@@ -1,8 +1,11 @@
 package com.bazel.jdt;
 
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+
 public final class BazelBridge {
     private static final BazelBridge INSTANCE = new BazelBridge();
     private long handle = -1;
+    private final ReentrantReadWriteLock rwLock = new ReentrantReadWriteLock();
 
     static {
         NativeLoader.load();
@@ -14,45 +17,81 @@ public final class BazelBridge {
         return INSTANCE;
     }
 
-    public synchronized void initialize(String workspacePath, String bazelPath, String cacheDir) {
-        if (handle != -1) {
-            shutdown();
+    public void initialize(String workspacePath, String bazelPath, String cacheDir) {
+        rwLock.writeLock().lock();
+        try {
+            if (handle != -1) {
+                nativeShutdown(handle);
+                handle = -1;
+            }
+            handle = nativeInitialize(workspacePath, bazelPath, cacheDir);
+        } finally {
+            rwLock.writeLock().unlock();
         }
-        handle = nativeInitialize(workspacePath, bazelPath, cacheDir);
     }
 
-    public synchronized void shutdown() {
-        if (handle != -1) {
-            nativeShutdown(handle);
-            handle = -1;
+    public void shutdown() {
+        rwLock.writeLock().lock();
+        try {
+            if (handle != -1) {
+                nativeShutdown(handle);
+                handle = -1;
+            }
+        } finally {
+            rwLock.writeLock().unlock();
         }
     }
 
-    public synchronized String[] discoverTargets() {
-        checkHandle();
-        return nativeDiscoverTargets(handle);
+    public String[] discoverTargets() {
+        rwLock.writeLock().lock();
+        try {
+            checkHandle();
+            return nativeDiscoverTargets(handle);
+        } finally {
+            rwLock.writeLock().unlock();
+        }
     }
 
-    public synchronized String[] computeClasspath(String targetLabel) {
-        checkHandle();
-        return nativeComputeClasspath(handle, targetLabel);
+    public String[] computeClasspath(String targetLabel) {
+        rwLock.writeLock().lock();
+        try {
+            checkHandle();
+            return nativeComputeClasspath(handle, targetLabel);
+        } finally {
+            rwLock.writeLock().unlock();
+        }
     }
 
     private static final int SYNC_STATE_DEAD = 3;
 
-    public synchronized int getSyncState() {
-        if (handle == -1) return SYNC_STATE_DEAD;
-        return nativeGetSyncState(handle);
+    public int getSyncState() {
+        rwLock.readLock().lock();
+        try {
+            if (handle == -1) return SYNC_STATE_DEAD;
+            return nativeGetSyncState(handle);
+        } finally {
+            rwLock.readLock().unlock();
+        }
     }
 
-    public synchronized void cleanCache() {
-        checkHandle();
-        nativeCleanCache(handle);
+    public void cleanCache() {
+        rwLock.writeLock().lock();
+        try {
+            checkHandle();
+            nativeCleanCache(handle);
+        } finally {
+            rwLock.writeLock().unlock();
+        }
     }
 
-    public synchronized String[] getPendingChanges() {
-        if (handle == -1) return new String[0];
-        return nativeGetPendingChanges(handle);
+    public String[] getPendingChanges() {
+        rwLock.readLock().lock();
+        try {
+            if (handle == -1) return new String[0];
+            return nativeGetPendingChanges(handle);
+        } finally {
+            rwLock.readLock().unlock();
+        }
     }
 
     private void checkHandle() {

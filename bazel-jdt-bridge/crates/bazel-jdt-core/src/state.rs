@@ -5,6 +5,7 @@ use bazel_query::BazelInvoker;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 use tokio::runtime::Runtime;
 
 use crate::watcher::BuildFileWatcher;
@@ -31,6 +32,10 @@ pub struct BazelJdtState {
     pub generation: AtomicU32,
     pub shutdown_flag: AtomicBool,
     pub pending_changes: Mutex<Vec<String>>,
+    /// Timeout for `bazel query` operations (default: 120s)
+    pub query_timeout: Duration,
+    /// Timeout for `bazel build --aspects` operations (default: 300s)
+    pub aspect_timeout: Duration,
 }
 
 impl BazelJdtState {
@@ -57,6 +62,8 @@ impl BazelJdtState {
             generation: AtomicU32::new(0),
             shutdown_flag: AtomicBool::new(false),
             pending_changes: Mutex::new(Vec::new()),
+            query_timeout: Duration::from_secs(120),
+            aspect_timeout: Duration::from_secs(300),
         })
     }
 

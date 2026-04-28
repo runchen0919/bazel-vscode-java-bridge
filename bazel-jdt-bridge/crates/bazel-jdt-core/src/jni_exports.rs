@@ -129,42 +129,44 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeInitialize(
             if state.is_shutdown() {
                 return;
             }
+
+            let mut changes_to_record: Vec<(String, String)> = Vec::new();
+            let mut packages_to_add: Vec<String> = Vec::new();
+
             for path in &paths {
                 let path_str = path.to_string_lossy();
-                if let Ok(Some(cached_hash)) = state.cache.get_build_hash(&path_str) {
-                    if let Ok(current_hash) = crate::change_detector::compute_file_hash(path) {
-                        if cached_hash != current_hash {
-                            let package_label =
-                                crate::change_detector::compute_build_file_package_label(
-                                    path,
-                                    &state.workspace_root,
-                                );
-                            let mut pending = state
-                                .pending_changes
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner());
-                            if !pending.contains(&package_label) {
-                                pending.push(package_label);
-                            }
-                            let _ = state.cache.put_build_hash(&path_str, &current_hash);
-                        }
-                    }
-                } else {
-                    if let Ok(current_hash) = crate::change_detector::compute_file_hash(path) {
+                if let Ok(current_hash) = crate::change_detector::compute_file_hash(path) {
+                    let needs_update = match state.cache.get_build_hash(&path_str) {
+                        Ok(Some(cached_hash)) => cached_hash != current_hash,
+                        Ok(None) => true,
+                        Err(_) => true,
+                    };
+                    if needs_update {
                         let package_label =
                             crate::change_detector::compute_build_file_package_label(
                                 path,
                                 &state.workspace_root,
                             );
-                        let mut pending = state
-                            .pending_changes
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner());
-                        if !pending.contains(&package_label) {
-                            pending.push(package_label);
-                        }
-                        let _ = state.cache.put_build_hash(&path_str, &current_hash);
+                        packages_to_add.push(package_label);
+                        changes_to_record.push((path_str.into_owned(), current_hash));
                     }
+                }
+            }
+
+            if !packages_to_add.is_empty() {
+                let mut pending = state
+                    .pending_changes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                for package_label in &packages_to_add {
+                    if !pending.contains(package_label) {
+                        pending.push(package_label.clone());
+                    }
+                }
+                drop(pending);
+
+                for (path_str, hash) in changes_to_record {
+                    let _ = state.cache.put_build_hash(&path_str, &hash);
                 }
             }
         }),
@@ -211,7 +213,7 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeShutdown(
             .unwrap_or_else(|e| e.into_inner())
             .take()
         {
-            watcher.stop();
+            watcher.stop_nonblocking();
         };
         let state = Box::from_raw(ptr);
         drop(state);
@@ -230,12 +232,11 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeDiscoverTargets(
     };
     state.set_sync_state(SyncState::Syncing);
 
-    let targets = match state
-        .runtime
-        .block_on(state.invoker.discover_java_targets())
-    {
-        Ok(t) => t,
-        Err(e) => {
+    let targets = match state.runtime.block_on(
+        tokio::time::timeout(state.query_timeout, state.invoker.discover_java_targets())
+    ) {
+        Ok(Ok(t)) => t,
+        Ok(Err(e)) => {
             state.set_sync_state(SyncState::Error);
             let _ = env.throw_new(
                 "java/lang/RuntimeException",
@@ -243,6 +244,18 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeDiscoverTargets(
                     "Failed to discover targets: {}. \
                      Try running 'bazel query //...:*' in the workspace to verify Java targets exist.",
                     e
+                ),
+            );
+            return std::ptr::null_mut();
+        }
+        Err(_) => {
+            state.set_sync_state(SyncState::Error);
+            let _ = env.throw_new(
+                "java/lang/RuntimeException",
+                format!(
+                    "Bazel query timed out after {}s. \
+                     Try running 'bazel query //...:*' manually to check performance.",
+                    state.query_timeout.as_secs()
                 ),
             );
             return std::ptr::null_mut();
@@ -447,7 +460,17 @@ fn run_full_resolution(
 
     let aspect_results = state
         .runtime
-        .block_on(state.invoker.resolve_full_classpath(&targets))
+        .block_on(tokio::time::timeout(
+            state.aspect_timeout,
+            state.invoker.resolve_full_classpath(&targets),
+        ))
+        .map_err(|_| {
+            format!(
+                "Bazel aspect build timed out after {}s for target '{}'",
+                state.aspect_timeout.as_secs(),
+                target_label
+            )
+        })?
         .map_err(|e| format!("Bazel aspect build failed: {}", e))?;
 
     if aspect_results.is_empty() {

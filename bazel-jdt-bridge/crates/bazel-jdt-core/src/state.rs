@@ -3,7 +3,7 @@ use bazel_graph::DependencyGraph;
 use bazel_parser::BuildFileParser;
 use bazel_query::BazelInvoker;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::Mutex;
 use tokio::runtime::Runtime;
 
@@ -15,6 +15,7 @@ pub enum SyncState {
     Idle = 0,
     Syncing = 1,
     Error = 2,
+    Dead = 3,
 }
 
 /// Central state for the Bazel JDT bridge
@@ -27,6 +28,8 @@ pub struct BazelJdtState {
     pub workspace_root: PathBuf,
     pub sync_state: AtomicI32,
     pub watcher: Mutex<Option<BuildFileWatcher>>,
+    pub generation: AtomicU32,
+    pub shutdown_flag: AtomicBool,
 }
 
 impl BazelJdtState {
@@ -50,6 +53,8 @@ impl BazelJdtState {
             workspace_root,
             sync_state: AtomicI32::new(SyncState::Idle as i32),
             watcher: Mutex::new(None),
+            generation: AtomicU32::new(0),
+            shutdown_flag: AtomicBool::new(false),
         })
     }
 
@@ -57,8 +62,22 @@ impl BazelJdtState {
         match self.sync_state.load(Ordering::SeqCst) {
             0 => SyncState::Idle,
             1 => SyncState::Syncing,
+            2 => SyncState::Error,
+            3 => SyncState::Dead,
             _ => SyncState::Error,
         }
+    }
+
+    pub fn is_shutdown(&self) -> bool {
+        self.shutdown_flag.load(Ordering::Acquire)
+    }
+
+    pub fn current_generation(&self) -> u32 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    pub fn next_generation(&self) -> u32 {
+        self.generation.fetch_add(1, Ordering::AcqRel) + 1
     }
 
     pub fn set_sync_state(&self, state: SyncState) {

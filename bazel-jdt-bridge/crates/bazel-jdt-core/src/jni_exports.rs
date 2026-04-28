@@ -1,5 +1,6 @@
 use crate::state::{BazelJdtState, SyncState};
 use crate::watcher::BuildFileWatcher;
+use std::sync::atomic::Ordering;
 
 use bazel_graph::TargetKind;
 use jni::objects::{JClass, JObject, JString};
@@ -17,6 +18,44 @@ fn create_string_array(
         env.set_object_array_element(&array, i as jsize, java_str)?;
     }
     Ok(array.into_raw())
+}
+
+fn encode_handle(generation: u32, ptr: *mut BazelJdtState) -> jlong {
+    (((generation as u64) << 32) | (ptr as u64)) as jlong
+}
+
+fn decode_handle(handle: jlong) -> (u32, *mut BazelJdtState) {
+    let gen = (handle >> 32) as u32;
+    let ptr = (handle & 0xFFFFFFFF) as *mut BazelJdtState;
+    (gen, ptr)
+}
+
+fn get_valid_state(env: &mut JNIEnv, handle: jlong) -> Option<&'static BazelJdtState> {
+    if handle == -1 {
+        let _ = env.throw_new("java/lang/IllegalStateException", "Not initialized");
+        return None;
+    }
+    let (gen, ptr) = decode_handle(handle);
+    if ptr.is_null() {
+        let _ = env.throw_new("java/lang/IllegalStateException", "Invalid handle");
+        return None;
+    }
+    let state = unsafe { &*ptr };
+    if state.is_shutdown() {
+        let _ = env.throw_new(
+            "java/lang/IllegalStateException",
+            "Native library has been shut down",
+        );
+        return None;
+    }
+    if state.current_generation() != gen {
+        let _ = env.throw_new(
+            "java/lang/IllegalStateException",
+            "Stale handle: state has been re-initialized",
+        );
+        return None;
+    }
+    Some(state)
 }
 
 #[no_mangle]
@@ -95,7 +134,9 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeInitialize(
         }
     }
 
-    Box::into_raw(Box::new(state)) as jlong
+    let gen = state.next_generation();
+    let ptr = Box::into_raw(Box::new(state));
+    encode_handle(gen, ptr)
 }
 
 #[no_mangle]
@@ -107,8 +148,14 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeShutdown(
     if handle == -1 {
         return;
     }
+    let (_, ptr) = decode_handle(handle);
+    if ptr.is_null() {
+        return;
+    }
     unsafe {
-        let state = Box::from_raw(handle as *mut BazelJdtState);
+        let state = &*ptr;
+        state.shutdown_flag.store(true, Ordering::Release);
+        state.set_sync_state(SyncState::Dead);
         if let Some(mut watcher) = state
             .watcher
             .lock()
@@ -117,6 +164,7 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeShutdown(
         {
             watcher.stop();
         };
+        let state = Box::from_raw(ptr);
         drop(state);
     }
 }
@@ -127,12 +175,10 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeDiscoverTargets(
     _class: JClass,
     handle: jlong,
 ) -> jobjectArray {
-    if handle == -1 {
-        let _ = env.throw_new("java/lang/IllegalStateException", "Not initialized");
-        return std::ptr::null_mut();
-    }
-
-    let state = unsafe { &*(handle as *const BazelJdtState) };
+    let state = match get_valid_state(&mut env, handle) {
+        Some(s) => s,
+        None => return std::ptr::null_mut(),
+    };
     state.set_sync_state(SyncState::Syncing);
 
     let targets = match state
@@ -182,10 +228,10 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeComputeClasspath(
     handle: jlong,
     target_label: JString,
 ) -> jobjectArray {
-    if handle == -1 {
-        let _ = env.throw_new("java/lang/IllegalStateException", "Not initialized");
-        return std::ptr::null_mut();
-    }
+    let state = match get_valid_state(&mut env, handle) {
+        Some(s) => s,
+        None => return std::ptr::null_mut(),
+    };
 
     let label: String = match env.get_string(&target_label) {
         Ok(s) => s.into(),
@@ -195,12 +241,13 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeComputeClasspath(
         }
     };
 
-    let state = unsafe { &*(handle as *const BazelJdtState) };
+    state.set_sync_state(SyncState::Syncing);
 
     if let Ok(Some(cached_json)) = state.cache.get_classpath(&label) {
         match serde_json::from_str::<bazel_graph::ComputedClasspath>(&cached_json) {
             Ok(computed) => {
                 let entries = computed.to_pipe_delimited_entries();
+                state.set_sync_state(SyncState::Idle);
                 return match create_string_array(&mut env, &entries) {
                     Ok(arr) => arr,
                     Err(_) => std::ptr::null_mut(),
@@ -225,6 +272,7 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeComputeClasspath(
             if let Ok(json) = serde_json::to_string(&computed) {
                 let _ = state.cache.put_classpath(&label, &json);
             }
+            state.set_sync_state(SyncState::Idle);
             match create_string_array(&mut env, &entries) {
                 Ok(arr) => arr,
                 Err(_) => std::ptr::null_mut(),
@@ -238,12 +286,14 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeComputeClasspath(
                     if let Ok(json) = serde_json::to_string(&computed) {
                         let _ = state.cache.put_classpath(&label, &json);
                     }
+                    state.set_sync_state(SyncState::Idle);
                     match create_string_array(&mut env, &entries) {
                         Ok(arr) => arr,
                         Err(_) => std::ptr::null_mut(),
                     }
                 }
                 Err(resolution_err) => {
+                    state.set_sync_state(SyncState::Error);
                     let _ = env.throw_new(
                         "java/lang/RuntimeException",
                         format!(
@@ -257,6 +307,7 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeComputeClasspath(
             }
         }
         Err(e) => {
+            state.set_sync_state(SyncState::Error);
             let _ = env.throw_new(
                 "java/lang/RuntimeException",
                 format!(
@@ -272,14 +323,14 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeComputeClasspath(
 
 #[no_mangle]
 pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeGetSyncState(
-    _env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
     handle: jlong,
 ) -> jint {
-    if handle == -1 {
-        return 0;
-    }
-    let state = unsafe { &*(handle as *const BazelJdtState) };
+    let state = match get_valid_state(&mut env, handle) {
+        Some(s) => s,
+        None => return SyncState::Dead as jint,
+    };
     state.get_sync_state() as jint
 }
 
@@ -289,11 +340,12 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeCleanCache(
     _class: JClass,
     handle: jlong,
 ) {
-    if handle == -1 {
-        return;
-    }
-    let state = unsafe { &*(handle as *const BazelJdtState) };
+    let state = match get_valid_state(&mut env, handle) {
+        Some(s) => s,
+        None => return,
+    };
     if let Err(e) = state.cache.clear() {
+        state.set_sync_state(SyncState::Error);
         let _ = env.throw_new(
             "java/lang/RuntimeException",
             format!("Failed to clear cache: {}", e),

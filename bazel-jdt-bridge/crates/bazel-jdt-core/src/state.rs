@@ -30,6 +30,7 @@ pub struct BazelJdtState {
     pub watcher: Mutex<Option<BuildFileWatcher>>,
     pub generation: AtomicU32,
     pub shutdown_flag: AtomicBool,
+    pub pending_changes: Mutex<Vec<String>>,
 }
 
 impl BazelJdtState {
@@ -55,6 +56,7 @@ impl BazelJdtState {
             watcher: Mutex::new(None),
             generation: AtomicU32::new(0),
             shutdown_flag: AtomicBool::new(false),
+            pending_changes: Mutex::new(Vec::new()),
         })
     }
 

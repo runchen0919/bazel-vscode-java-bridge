@@ -48,6 +48,11 @@ public final class BazelBridge {
         nativeCleanCache(handle);
     }
 
+    public synchronized String[] getPendingChanges() {
+        if (handle == -1) return new String[0];
+        return nativeGetPendingChanges(handle);
+    }
+
     private void checkHandle() {
         if (handle == -1) {
             throw new IllegalStateException("BazelBridge not initialized");
@@ -60,4 +65,5 @@ public final class BazelBridge {
     private native String[] nativeComputeClasspath(long handle, String targetLabel);
     private native int nativeGetSyncState(long handle);
     private native void nativeCleanCache(long handle);
+    private native String[] nativeGetPendingChanges(long handle);
 }

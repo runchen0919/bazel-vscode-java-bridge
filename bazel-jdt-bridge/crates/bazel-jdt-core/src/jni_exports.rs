@@ -120,10 +120,53 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeInitialize(
     }
 
     let workspace_root = state.workspace_root.clone();
+    let state_ptr: usize = &state as *const BazelJdtState as usize;
     match BuildFileWatcher::start(
         workspace_root,
         Box::new(move |paths| {
             log::info!("Build files changed: {:?}", paths);
+            let state = unsafe { &*(state_ptr as *const BazelJdtState) };
+            if state.is_shutdown() {
+                return;
+            }
+            for path in &paths {
+                let path_str = path.to_string_lossy();
+                if let Ok(Some(cached_hash)) = state.cache.get_build_hash(&path_str) {
+                    if let Ok(current_hash) = crate::change_detector::compute_file_hash(path) {
+                        if cached_hash != current_hash {
+                            let package_label =
+                                crate::change_detector::compute_build_file_package_label(
+                                    path,
+                                    &state.workspace_root,
+                                );
+                            let mut pending = state
+                                .pending_changes
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner());
+                            if !pending.contains(&package_label) {
+                                pending.push(package_label);
+                            }
+                            let _ = state.cache.put_build_hash(&path_str, &current_hash);
+                        }
+                    }
+                } else {
+                    if let Ok(current_hash) = crate::change_detector::compute_file_hash(path) {
+                        let package_label =
+                            crate::change_detector::compute_build_file_package_label(
+                                path,
+                                &state.workspace_root,
+                            );
+                        let mut pending = state
+                            .pending_changes
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        if !pending.contains(&package_label) {
+                            pending.push(package_label);
+                        }
+                        let _ = state.cache.put_build_hash(&path_str, &current_hash);
+                    }
+                }
+            }
         }),
     ) {
         Ok(watcher) => {
@@ -353,12 +396,37 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeCleanCache(
     }
 }
 
+#[no_mangle]
+pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeGetPendingChanges(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) -> jobjectArray {
+    let state = match get_valid_state(&mut env, handle) {
+        Some(s) => s,
+        None => return std::ptr::null_mut(),
+    };
+    let labels: Vec<String> = {
+        let mut pending = state
+            .pending_changes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *pending)
+    };
+    match create_string_array(&mut env, &labels) {
+        Ok(arr) => arr,
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
 fn infer_target_kind(label: &str) -> TargetKind {
-    if label.contains("_test") || label.contains("Test") {
+    let rule_name = label.rsplit(':').next().unwrap_or(label);
+    if rule_name.contains("_test") || rule_name.ends_with("Test") {
         TargetKind::JavaTest
-    } else if label.contains("_binary") || label.contains("Binary") || label.contains(":main") {
+    } else if rule_name.contains("_binary") || rule_name.ends_with("Binary") || rule_name == "main"
+    {
         TargetKind::JavaBinary
-    } else if label.contains("_import") || label.contains("Import") {
+    } else if rule_name.contains("_import") || rule_name.ends_with("Import") {
         TargetKind::JavaImport
     } else {
         TargetKind::JavaLibrary

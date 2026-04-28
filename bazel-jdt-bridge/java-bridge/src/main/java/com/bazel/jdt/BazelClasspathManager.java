@@ -99,21 +99,27 @@ public class BazelClasspathManager {
             if (!project.isOpen() || !project.hasNature("com.bazel.jdt.bazelNature")) {
                 return labels;
             }
-            
-            // For each changed BUILD file, compute the corresponding target label
-            // using the project's location as the workspace root context
-            for (String filePath : changedFiles) {
-                // Extract package-relative path and convert to Bazel label
-                // e.g., /workspace/foo/bar/BUILD -> //foo/bar:target
-                String projectName = project.getName();
-                if (filePath.contains(projectName)) {
-                    // Add a label placeholder — actual resolution happens in Rust
-                    labels.add("//" + projectName + ":*" );
-                }
-            }
         } catch (CoreException e) {
             LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
                 "Nature check failed for project " + project.getName(), e));
+            return labels;
+        }
+
+        BazelBridge bridge = BazelBridge.getInstance();
+        String[] pendingLabels = bridge.getPendingChanges();
+        for (String label : pendingLabels) {
+            if (!labels.contains(label)) {
+                labels.add(label);
+            }
+        }
+
+        if (labels.isEmpty()) {
+            for (String filePath : changedFiles) {
+                String projectName = project.getName();
+                if (filePath.contains(projectName)) {
+                    labels.add("//" + projectName + ":*");
+                }
+            }
         }
         return labels;
     }

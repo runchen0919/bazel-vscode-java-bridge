@@ -83,14 +83,10 @@ impl BuildFileWatcher {
         self.debouncer.take();
     }
 
-    pub fn stop_nonblocking(&mut self) {
+    pub fn stop_nonblocking(&mut self) -> Option<std::thread::JoinHandle<()>> {
         self.running.store(false, Ordering::Release);
         self.debouncer.take();
-        if let Some(handle) = self.thread_handle.take() {
-            let _ = std::thread::spawn(move || {
-                let _ = handle.join();
-            });
-        }
+        self.thread_handle.take()
     }
 }
 

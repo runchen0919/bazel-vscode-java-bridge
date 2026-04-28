@@ -213,8 +213,21 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeShutdown(
             .unwrap_or_else(|e| e.into_inner())
             .take()
         {
-            watcher.stop_nonblocking();
-        };
+            if let Some(join_handle) = watcher.stop_nonblocking() {
+                *state
+                    .watcher_join_handle
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(join_handle);
+            }
+        }
+        if let Some(join_handle) = state
+            .watcher_join_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            let _ = join_handle.join();
+        }
         let state = Box::from_raw(ptr);
         drop(state);
     }

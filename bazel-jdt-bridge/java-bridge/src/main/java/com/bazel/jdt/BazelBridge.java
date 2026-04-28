@@ -43,60 +43,52 @@ public final class BazelBridge {
     }
 
     public String[] discoverTargets() {
-        rwLock.writeLock().lock();
-        try {
-            checkHandle();
-            return nativeDiscoverTargets(handle);
-        } finally {
-            rwLock.writeLock().unlock();
-        }
+        long h = snapshotHandle();
+        return nativeDiscoverTargets(h);
     }
 
     public String[] computeClasspath(String targetLabel) {
-        rwLock.writeLock().lock();
-        try {
-            checkHandle();
-            return nativeComputeClasspath(handle, targetLabel);
-        } finally {
-            rwLock.writeLock().unlock();
-        }
+        long h = snapshotHandle();
+        return nativeComputeClasspath(h, targetLabel);
     }
 
     private static final int SYNC_STATE_DEAD = 3;
 
     public int getSyncState() {
-        rwLock.readLock().lock();
-        try {
-            if (handle == -1) return SYNC_STATE_DEAD;
-            return nativeGetSyncState(handle);
-        } finally {
-            rwLock.readLock().unlock();
-        }
+        long h = snapshotHandleNullable();
+        if (h == -1) return SYNC_STATE_DEAD;
+        return nativeGetSyncState(h);
     }
 
     public void cleanCache() {
-        rwLock.writeLock().lock();
-        try {
-            checkHandle();
-            nativeCleanCache(handle);
-        } finally {
-            rwLock.writeLock().unlock();
-        }
+        long h = snapshotHandle();
+        nativeCleanCache(h);
     }
 
     public String[] getPendingChanges() {
+        long h = snapshotHandleNullable();
+        if (h == -1) return new String[0];
+        return nativeGetPendingChanges(h);
+    }
+
+    private long snapshotHandle() {
         rwLock.readLock().lock();
         try {
-            if (handle == -1) return new String[0];
-            return nativeGetPendingChanges(handle);
+            if (handle == -1) {
+                throw new IllegalStateException("BazelBridge not initialized");
+            }
+            return handle;
         } finally {
             rwLock.readLock().unlock();
         }
     }
 
-    private void checkHandle() {
-        if (handle == -1) {
-            throw new IllegalStateException("BazelBridge not initialized");
+    private long snapshotHandleNullable() {
+        rwLock.readLock().lock();
+        try {
+            return handle;
+        } finally {
+            rwLock.readLock().unlock();
         }
     }
 

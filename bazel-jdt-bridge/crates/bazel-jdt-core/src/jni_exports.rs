@@ -197,7 +197,13 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeShutdown(
     }
     unsafe {
         let state = &*ptr;
-        state.shutdown_flag.store(true, Ordering::Release);
+        if state
+            .shutdown_flag
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
         state.set_sync_state(SyncState::Dead);
         if let Some(mut watcher) = state
             .watcher

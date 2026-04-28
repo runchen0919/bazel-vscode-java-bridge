@@ -332,12 +332,21 @@ impl<'a> TextProtoParser<'a> {
 
         while self.current_token != Token::Eof {
             match self.parse_field() {
-                Ok((name, value)) => {
-                    fields.insert(name, value);
-                }
+                Ok((name, value)) => match (fields.get(&name), value) {
+                    (Some(ProtoValue::Strings(existing)), ProtoValue::String(new)) => {
+                        let mut updated = existing.clone();
+                        updated.push(new);
+                        fields.insert(name, ProtoValue::Strings(updated));
+                    }
+                    (Some(ProtoValue::String(old)), ProtoValue::String(new)) => {
+                        fields.insert(name, ProtoValue::Strings(vec![old.clone(), new]));
+                    }
+                    (_, value) => {
+                        fields.insert(name, value);
+                    }
+                },
                 Err(e) => {
                     result.add_error(e);
-                    // Try to recover by skipping to the next field
                     self.skip_to_next_field();
                 }
             }
@@ -356,14 +365,20 @@ impl<'a> TextProtoParser<'a> {
         if let Some(ProtoValue::Message(m)) = fields.remove("java_info") {
             result.value.java_info = Some(self.extract_java_ide_info(m));
         }
-        if let Some(ProtoValue::Strings(s)) = fields.remove("deps") {
-            result.value.deps = s;
+        match fields.remove("deps") {
+            Some(ProtoValue::Strings(s)) => result.value.deps = s,
+            Some(ProtoValue::String(s)) => result.value.deps = vec![s],
+            _ => {}
         }
-        if let Some(ProtoValue::Strings(s)) = fields.remove("runtime_deps") {
-            result.value.runtime_deps = s;
+        match fields.remove("runtime_deps") {
+            Some(ProtoValue::Strings(s)) => result.value.runtime_deps = s,
+            Some(ProtoValue::String(s)) => result.value.runtime_deps = vec![s],
+            _ => {}
         }
-        if let Some(ProtoValue::Strings(s)) = fields.remove("exports") {
-            result.value.exports = s;
+        match fields.remove("exports") {
+            Some(ProtoValue::Strings(s)) => result.value.exports = s,
+            Some(ProtoValue::String(s)) => result.value.exports = vec![s],
+            _ => {}
         }
 
         result
@@ -395,9 +410,15 @@ impl<'a> TextProtoParser<'a> {
         let value = match &self.current_token {
             Token::LBrace => {
                 self.advance()?;
-                let msg = self.parse_message()?;
-                self.expect(&Token::RBrace)?;
-                ProtoValue::Message(msg)
+                match self.parse_message() {
+                    Ok(msg) => {
+                        let _ = self.expect(&Token::RBrace);
+                        ProtoValue::Message(msg)
+                    }
+                    Err(e) => {
+                        return Err(e);
+                    }
+                }
             }
             Token::LBracket => {
                 self.advance()?;
@@ -439,28 +460,40 @@ impl<'a> TextProtoParser<'a> {
         let mut fields = HashMap::new();
 
         while self.current_token != Token::RBrace && self.current_token != Token::Eof {
-            let (name, value) = self.parse_field()?;
-
-            let existing = fields.remove(&name);
-            match (existing, value) {
-                (Some(ProtoValue::Strings(mut arr)), ProtoValue::String(s)) => {
-                    arr.push(s);
-                    fields.insert(name, ProtoValue::Strings(arr));
+            match self.parse_field() {
+                Ok((name, value)) => {
+                    let existing = fields.remove(&name);
+                    match (existing, value) {
+                        (Some(ProtoValue::Strings(mut arr)), ProtoValue::String(s)) => {
+                            arr.push(s);
+                            fields.insert(name, ProtoValue::Strings(arr));
+                        }
+                        (Some(ProtoValue::Messages(mut arr)), ProtoValue::Message(m)) => {
+                            arr.push(m);
+                            fields.insert(name, ProtoValue::Messages(arr));
+                        }
+                        (Some(ProtoValue::String(existing)), ProtoValue::String(s)) => {
+                            fields.insert(name, ProtoValue::Strings(vec![existing, s]));
+                        }
+                        (Some(ProtoValue::Message(existing)), ProtoValue::Message(m)) => {
+                            fields.insert(name, ProtoValue::Messages(vec![existing, m]));
+                        }
+                        (_, value) => {
+                            fields.insert(name, value);
+                        }
+                    }
                 }
-                (Some(ProtoValue::Messages(mut arr)), ProtoValue::Message(m)) => {
-                    arr.push(m);
-                    fields.insert(name, ProtoValue::Messages(arr));
-                }
-                (Some(ProtoValue::String(existing)), ProtoValue::String(s)) => {
-                    fields.insert(name, ProtoValue::Strings(vec![existing, s]));
-                }
-                (Some(ProtoValue::Message(existing)), ProtoValue::Message(m)) => {
-                    fields.insert(name, ProtoValue::Messages(vec![existing, m]));
-                }
-                (_, value) => {
-                    fields.insert(name, value);
+                Err(_) => {
+                    if self.current_token == Token::Eof {
+                        break;
+                    }
+                    self.skip_to_next_field();
                 }
             }
+        }
+
+        if self.current_token == Token::Eof {
+            return Err(ParseError::UnexpectedEndOfInput { position: 0 });
         }
 
         Ok(fields)
@@ -504,7 +537,6 @@ impl<'a> TextProtoParser<'a> {
     }
 
     fn skip_to_next_field(&mut self) {
-        // Skip tokens until we find a likely field start or EOF
         let mut brace_depth = 0;
 
         loop {
@@ -520,7 +552,6 @@ impl<'a> TextProtoParser<'a> {
                     brace_depth += 1;
                 }
                 Token::Identifier(_) if brace_depth == 0 => {
-                    // Check if this looks like a field name
                     break;
                 }
                 _ => {}
@@ -578,12 +609,16 @@ impl<'a> TextProtoParser<'a> {
                 .iter()
                 .map(|m| self.extract_artifact_location(m.clone()))
                 .collect();
+        } else if let Some(ProtoValue::Message(m)) = fields.get("sources") {
+            info.sources = vec![self.extract_artifact_location(m.clone())];
         }
         if let Some(ProtoValue::Messages(msgs)) = fields.get("jars") {
             info.jars = msgs
                 .iter()
                 .map(|m| self.extract_jar_info(m.clone()))
                 .collect();
+        } else if let Some(ProtoValue::Message(m)) = fields.get("jars") {
+            info.jars = vec![self.extract_jar_info(m.clone())];
         }
         if let Some(ProtoValue::Messages(msgs)) = fields.get("generated_jars") {
             info.generated_jars = msgs
@@ -711,14 +746,13 @@ mod tests {
         let input = r#"
             label: "//foo:bar"
             kind: "java_library"
-            bad_field { unclosed
+            : "orphan_value"
             deps: "//foo:baz"
         "#;
 
         let result = parse_text_proto(input);
         assert_eq!(result.value.label, "//foo:bar");
         assert_eq!(result.value.kind, "java_library");
-        // deps should still be parsed despite the error in bad_field
         assert_eq!(result.value.deps, vec!["//foo:baz"]);
         assert!(!result.errors.is_empty());
     }

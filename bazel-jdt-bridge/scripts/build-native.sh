@@ -56,7 +56,7 @@ get_native_target() {
             echo "${arch}-apple-darwin"
             ;;
         MINGW*|MSYS*|CYGWIN*)
-            echo "${arch}-pc-windows-msvc"
+            echo "${arch}-pc-windows-gnu"
             ;;
         *)
             echo "unknown"

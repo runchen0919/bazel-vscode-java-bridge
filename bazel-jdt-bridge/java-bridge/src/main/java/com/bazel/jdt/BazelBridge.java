@@ -38,8 +38,10 @@ public final class BazelBridge {
         return nativeComputeClasspath(handle, targetLabel);
     }
 
+    private static final int SYNC_STATE_DEAD = 3;
+
     public synchronized int getSyncState() {
-        if (handle == -1) return 0;
+        if (handle == -1) return SYNC_STATE_DEAD;
         return nativeGetSyncState(handle);
     }
 

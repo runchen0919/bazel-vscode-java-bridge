@@ -178,11 +178,8 @@ impl ComputedClasspath {
     }
 
     pub fn filter_by_visibility(&mut self, _requesting_package: &str) {
-        // In Bazel, visibility is enforced at the target level, not JAR level.
-        // For now, this is a no-op placeholder — actual visibility enforcement
-        // requires Bazel query integration to check visibility rules.
-        // The access_rules field already handles package-level visibility filtering
-        // that JDT.LS enforces at the IDE level.
+        self.entries
+            .retain(|entry| entry.is_exported || entry.entry_type != ClasspathEntryType::Library);
     }
 
     pub fn detect_duplicate_jars(&self) -> Vec<JarConflict> {

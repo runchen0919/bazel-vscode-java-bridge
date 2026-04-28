@@ -3,7 +3,6 @@ import * as path from 'path';
 import { registerCommands } from './commands';
 import { createStatusBar } from './statusBar';
 import { getConfig } from './config';
-import { BazelConfig } from './config';
 
 export async function activate(context: vscode.ExtensionContext) {
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -19,18 +18,12 @@ export async function activate(context: vscode.ExtensionContext) {
 
     const config = getConfig();
 
-    try {
-        await vscode.commands.executeCommand(
-            'java.execute.workspaceCommand',
-            'bazel-jdt.importProject',
-            workspaceRoot,
-            config.bazelPath,
-            config.cacheDir
-        );
-        vscode.window.showInformationMessage('Bazel project imported successfully');
-    } catch (error) {
-        vscode.window.showErrorMessage(`Bazel import failed: ${error}`);
-    }
+    // Do NOT call bazel-jdt.importProject here.
+    // BazelProjectImporter is auto-triggered by JDT.LS during workspace initialization
+    // (via org.eclipse.jdt.ls.core.importers extension point in plugin.xml).
+    // Calling it again from here causes a race: both paths call bridge.initialize(),
+    // and the second call shuts down the state created by the first, producing
+    // "Stale handle: state has been re-initialized" on the first path's discoverTargets().
 
     const statusBarItem = createStatusBar(context);
     registerCommands(context);

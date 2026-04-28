@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { registerCommands } from './commands';
 import { createStatusBar } from './statusBar';
 import { getConfig } from './config';
@@ -33,6 +34,17 @@ export async function activate(context: vscode.ExtensionContext) {
 
     const statusBarItem = createStatusBar(context);
     registerCommands(context);
+
+    if (config.syncOnSave) {
+        context.subscriptions.push(
+            vscode.workspace.onDidSaveTextDocument(doc => {
+                const fileName = path.basename(doc.uri.fsPath);
+                if (fileName === 'BUILD' || fileName === 'BUILD.bazel') {
+                    vscode.commands.executeCommand('bazel-jdt.syncProject');
+                }
+            })
+        );
+    }
 
     context.subscriptions.push(statusBarItem);
 }

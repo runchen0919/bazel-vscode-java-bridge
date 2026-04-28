@@ -1,14 +1,20 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
+import { getConfig } from './config';
 
 export function registerCommands(context: vscode.ExtensionContext) {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
+
     context.subscriptions.push(
         vscode.commands.registerCommand('bazel-jdt.importProject', async () => {
             try {
+                const config = getConfig();
                 await vscode.window.withProgress(
                     { location: vscode.ProgressLocation.Window, title: 'Importing Bazel project...' },
                     async (progress) => {
                         progress.report({ message: 'Discovering Java targets...' });
-                        await vscode.commands.executeCommand('java.execute.workspaceCommand', 'bazel-jdt.importProject');
+                        await vscode.commands.executeCommand('java.execute.workspaceCommand',
+                            'bazel-jdt.importProject', workspaceRoot, config.bazelPath, config.cacheDir);
                     }
                 );
                 vscode.window.showInformationMessage('Bazel project imported successfully');

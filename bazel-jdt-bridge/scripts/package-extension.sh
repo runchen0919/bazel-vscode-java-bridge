@@ -24,8 +24,8 @@ cp package.json "$BUILD_DIR/vscode-extension/"
 cp -r dist "$BUILD_DIR/vscode-extension/"
 
 cd "$BUILD_DIR/vscode-extension"
-npx @vscode/vsce package --no-dependencies 2>/dev/null || true
-mv *.vsix "$BUILD_DIR/" 2>/dev/null || true
+npx @vscode/vsce package --no-dependencies
+mv *.vsix "$BUILD_DIR/"
 
 echo "Done: $BUILD_DIR/"
 ls -la "$BUILD_DIR/"

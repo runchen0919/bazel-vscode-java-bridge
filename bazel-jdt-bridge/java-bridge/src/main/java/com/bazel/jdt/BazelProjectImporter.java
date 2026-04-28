@@ -8,12 +8,15 @@ import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IWorkspaceRoot;
 import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.CoreException;
+import org.eclipse.core.runtime.ILog;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.IStatus;
+import org.eclipse.core.runtime.Platform;
 import org.eclipse.core.runtime.Status;
 import org.eclipse.jdt.ls.core.internal.AbstractProjectImporter;
 
 public class BazelProjectImporter extends AbstractProjectImporter {
+    private static final ILog LOG = Platform.getLog(BazelProjectImporter.class);
 
     @Override
     public boolean applies(IProgressMonitor monitor) {
@@ -26,10 +29,12 @@ public class BazelProjectImporter extends AbstractProjectImporter {
     public void importToWorkspace(IProgressMonitor monitor) throws CoreException {
         String workspacePath = rootFolder.getAbsolutePath();
         String bazelPath = "bazel";
-        String cacheDir = System.getProperty("user.home", "") + "/.cache/bazel-jdt";
+        String cacheDir = BazelCommandHandler.DEFAULT_CACHE_DIR;
 
         BazelBridge bridge = BazelBridge.getInstance();
         bridge.initialize(workspacePath, bazelPath, cacheDir);
+        LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+            "Importing Bazel workspace: " + workspacePath));
 
         String[] targets;
         try {
@@ -57,6 +62,8 @@ public class BazelProjectImporter extends AbstractProjectImporter {
                 }
                 BazelClasspathManager.setClasspathContainer(project, targetLabel);
             } catch (Exception e) {
+                LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
+                    "Failed to import target: " + targetLabel, e));
             }
         }
     }

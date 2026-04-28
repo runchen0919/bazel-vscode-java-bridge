@@ -22,7 +22,7 @@ export function createStatusBar(context: vscode.ExtensionContext): vscode.Status
                 }
             }
         } catch {
-            statusBarItem.text = 'Bazel ✓';
+            statusBarItem.text = '$(sync~spin) Bazel';
             statusBarItem.backgroundColor = undefined;
         }
     }, 2000);

@@ -5,11 +5,17 @@ import java.util.List;
 
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IResource;
+import org.eclipse.core.runtime.ILog;
 import org.eclipse.core.runtime.IProgressMonitor;
+import org.eclipse.core.runtime.IStatus;
+import org.eclipse.core.runtime.Platform;
+import org.eclipse.core.runtime.Status;
 import org.eclipse.jdt.ls.core.internal.managers.IBuildSupport;
 import org.eclipse.jdt.ls.core.internal.managers.ProjectsManager.CHANGE_TYPE;
 
 public class BazelBuildSupport implements IBuildSupport {
+    private static final ILog LOG = Platform.getLog(BazelBuildSupport.class);
+
     private static final List<String> WATCH_PATTERNS = Arrays.asList(
         "**/BUILD",
         "**/BUILD.bazel",
@@ -23,6 +29,8 @@ public class BazelBuildSupport implements IBuildSupport {
         try {
             return project.hasNature("com.bazel.jdt.bazelNature");
         } catch (Exception e) {
+            LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                "Build support nature check failed for project", e));
             return false;
         }
     }

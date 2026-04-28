@@ -6,6 +6,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 
+import org.eclipse.core.runtime.ILog;
+import org.eclipse.core.runtime.IStatus;
+import org.eclipse.core.runtime.Platform;
+import org.eclipse.core.runtime.Status;
+
 /**
  * Cross-platform native library loader for bazel_jdt_core.
  * Supports: linux-x86_64, linux-aarch64, macos-x86_64, macos-aarch64, windows-x86_64
@@ -13,6 +18,7 @@ import java.nio.file.StandardCopyOption;
 public final class NativeLoader {
     private NativeLoader() {}
 
+    private static final ILog LOG = Platform.getLog(NativeLoader.class);
     private static final String LIB_NAME = "bazel_jdt_core";
 
     /**
@@ -36,6 +42,8 @@ public final class NativeLoader {
             tempLib.toFile().deleteOnExit();
             System.load(tempLib.toString());
         } catch (IOException e) {
+            LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
+                "Failed to load native library: " + e.getMessage(), e));
             throw new RuntimeException("Failed to load native library: " + e.getMessage(), e);
         }
     }

@@ -2,8 +2,12 @@ package com.bazel.jdt;
 
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.runtime.CoreException;
+import org.eclipse.core.runtime.ILog;
 import org.eclipse.core.runtime.IPath;
+import org.eclipse.core.runtime.IStatus;
 import org.eclipse.core.runtime.Path;
+import org.eclipse.core.runtime.Platform;
+import org.eclipse.core.runtime.Status;
 import org.eclipse.jdt.core.ClasspathContainerInitializer;
 import org.eclipse.jdt.core.IClasspathContainer;
 import org.eclipse.jdt.core.JavaCore;
@@ -12,6 +16,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class BazelClasspathManager {
+    private static final ILog LOG = Platform.getLog(BazelClasspathManager.class);
 
     public static void setClasspathContainer(IProject project, String targetLabel) {
         try {
@@ -25,7 +30,8 @@ public class BazelClasspathManager {
                 null
             );
         } catch (Exception e) {
-            // Silently ignore classpath errors — JDT.LS will retry
+            LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
+                "Failed to set classpath container for " + targetLabel, e));
         }
     }
 
@@ -48,6 +54,8 @@ public class BazelClasspathManager {
                 try {
                     if (!project.hasNature("org.eclipse.jdt.core.javanature")) continue;
                 } catch (CoreException e) {
+                    LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                        "Nature check failed for project " + project.getName(), e));
                     continue;
                 }
                 for (String targetLabel : targets) {
@@ -55,7 +63,8 @@ public class BazelClasspathManager {
                 }
             }
         } catch (Exception e) {
-            // Silently ignore refresh errors
+            LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
+                "Failed to refresh classpath", e));
         }
     }
 
@@ -76,7 +85,8 @@ public class BazelClasspathManager {
                 }
             }
         } catch (Exception e) {
-            // Silently ignore refresh errors
+            LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
+                "Failed to refresh classpath for changed files", e));
         }
     }
 
@@ -102,7 +112,8 @@ public class BazelClasspathManager {
                 }
             }
         } catch (CoreException e) {
-            // Project nature check failed
+            LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                "Nature check failed for project " + project.getName(), e));
         }
         return labels;
     }

@@ -29,11 +29,16 @@ export async function activate(context: vscode.ExtensionContext) {
     registerCommands(context);
 
     if (config.syncOnSave) {
+        let syncTimer: ReturnType<typeof setTimeout> | undefined;
+        context.subscriptions.push(new vscode.Disposable(() => clearTimeout(syncTimer)));
         context.subscriptions.push(
             vscode.workspace.onDidSaveTextDocument(doc => {
                 const fileName = path.basename(doc.uri.fsPath);
                 if (fileName === 'BUILD' || fileName === 'BUILD.bazel') {
-                    vscode.commands.executeCommand('bazel-jdt.syncProject');
+                    clearTimeout(syncTimer);
+                    syncTimer = setTimeout(() => {
+                        vscode.commands.executeCommand('bazel-jdt.syncProject');
+                    }, 1000);
                 }
             })
         );

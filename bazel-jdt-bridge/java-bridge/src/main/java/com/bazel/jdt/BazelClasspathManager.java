@@ -96,7 +96,7 @@ public class BazelClasspathManager {
     private static List<String> extractTargetLabels(IProject project, List<String> changedFiles) {
         List<String> labels = new ArrayList<>();
         try {
-            if (!project.isOpen() || !project.hasNature("com.bazel.jdt.bazelNature")) {
+            if (!project.isOpen() || !project.hasNature(BazelNature.NATURE_ID)) {
                 return labels;
             }
         } catch (CoreException e) {

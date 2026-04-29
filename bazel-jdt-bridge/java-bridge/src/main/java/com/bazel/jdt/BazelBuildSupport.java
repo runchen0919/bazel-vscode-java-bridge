@@ -27,7 +27,7 @@ public class BazelBuildSupport implements IBuildSupport {
     @Override
     public boolean applies(IProject project) {
         try {
-            return project.hasNature("com.bazel.jdt.bazelNature");
+            return project.hasNature(BazelNature.NATURE_ID);
         } catch (Exception e) {
             LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
                 "Build support nature check failed for project", e));

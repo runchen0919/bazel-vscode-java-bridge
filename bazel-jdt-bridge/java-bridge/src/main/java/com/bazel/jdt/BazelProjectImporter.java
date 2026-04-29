@@ -65,7 +65,7 @@ public class BazelProjectImporter extends AbstractProjectImporter {
                 String[] natureIds = desc.getNatureIds();
                 String[] newNatureIds = new String[natureIds.length + 1];
                 System.arraycopy(natureIds, 0, newNatureIds, 0, natureIds.length);
-                newNatureIds[natureIds.length] = "com.bazel.jdt.bazelNature";
+                newNatureIds[natureIds.length] = BazelNature.NATURE_ID;
                 desc.setNatureIds(newNatureIds);
                 project.setDescription(desc, monitor);
                 BazelClasspathManager.setClasspathContainer(project, targetLabel);

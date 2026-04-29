@@ -1,3 +1,4 @@
+pub mod aspect;
 pub mod change_detector;
 pub mod jni_exports;
 pub mod state;

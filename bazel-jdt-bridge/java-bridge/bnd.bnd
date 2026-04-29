@@ -2,7 +2,7 @@ Bundle-SymbolicName: com.bazel.jdt; singleton:=true
 Bundle-Version: 0.1.0
 Bundle-Name: Bazel JDT Bridge
 Bundle-Activator: com.bazel.jdt.BazelActivator
-Require-Bundle: org.eclipse.jdt.core, org.eclipse.jdt.ls.core
+Require-Bundle: org.eclipse.jdt.core, org.eclipse.jdt.ls.core, org.eclipse.core.resources
 Export-Package: com.bazel.jdt
 Bundle-NativeCode: \
     native/linux-x86_64/libbazel_jdt_core.so; osname=Linux; processor=x86_64, \

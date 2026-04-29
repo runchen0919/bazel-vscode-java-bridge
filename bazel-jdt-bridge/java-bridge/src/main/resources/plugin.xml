@@ -19,10 +19,10 @@
     </extension>
 
     <extension point="org.eclipse.core.resources.natures"
-               id="com.bazel.jdt.bazelNature"
+               id="bazelNature"
                name="Bazel Project Nature">
         <runtime>
-            <run class="org.eclipse.core.resources.IProjectNature"/>
+            <run class="com.bazel.jdt.BazelNature"/>
         </runtime>
     </extension>
 </plugin>

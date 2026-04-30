@@ -23,8 +23,21 @@ public class BazelClasspathContainerInitializer extends ClasspathContainerInitia
         if (!BazelBridge.getInstance().isInitialized()) {
             LOG.log(new org.eclipse.core.runtime.Status(
                 org.eclipse.core.runtime.IStatus.INFO, "com.bazel.jdt",
-                "Bridge not initialized, skipping container resolution for "
-                    + project.getProject().getName()));
+                "Bridge not initialized, setting empty container for "
+                    + project.getProject().getName()
+                    + " — will refresh after initialization"));
+            try {
+                JavaCore.setClasspathContainer(
+                    BazelClasspathContainer.CONTAINER_PATH,
+                    new IJavaProject[]{project},
+                    new IClasspathContainer[]{BazelClasspathContainer.EMPTY},
+                    null
+                );
+            } catch (Exception e) {
+                LOG.log(new org.eclipse.core.runtime.Status(
+                    org.eclipse.core.runtime.IStatus.WARNING, "com.bazel.jdt",
+                    "Failed to set empty container for " + project.getProject().getName(), e));
+            }
             return;
         }
         List<String> targetLabels = TargetProjectMapping.readTargets(project.getProject());

@@ -101,6 +101,7 @@ public class BazelProjectImporter extends AbstractProjectImporter {
         }
 
         BazelClasspathManager.refreshClasspath();
+        BazelClasspathManager.forceRefreshAllContainers();
     }
 
     private void configureClasspath(IProject project, String packageName,

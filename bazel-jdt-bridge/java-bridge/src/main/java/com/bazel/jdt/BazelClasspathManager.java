@@ -85,6 +85,37 @@ public class BazelClasspathManager {
     }
 
     /**
+     * Force-refresh all Bazel classpath containers across all projects.
+     * Called after import completes to override any stale cached empty containers
+     * from pre-initialization resolution attempts.
+     */
+    public static void forceRefreshAllContainers() {
+        try {
+            org.eclipse.core.resources.IWorkspace workspace =
+                org.eclipse.core.resources.ResourcesPlugin.getWorkspace();
+            IProject[] projects = workspace.getRoot().getProjects();
+
+            for (IProject project : projects) {
+                if (!project.isOpen()) continue;
+                try {
+                    if (!project.hasNature("org.eclipse.jdt.core.javanature")) continue;
+                } catch (CoreException e) {
+                    continue;
+                }
+                List<String> targetLabels = TargetProjectMapping.readTargets(project);
+                for (String targetLabel : targetLabels) {
+                    setClasspathContainer(project, targetLabel);
+                }
+            }
+            LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                "Force-refreshed all Bazel classpath containers"));
+        } catch (Exception e) {
+            LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
+                "Failed to force-refresh classpath containers", e));
+        }
+    }
+
+    /**
      * Refresh classpath for projects affected by changed BUILD files.
      * Called by BazelBuildSupport when file changes are detected.
      */

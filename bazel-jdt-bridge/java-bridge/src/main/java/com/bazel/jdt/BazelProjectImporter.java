@@ -101,7 +101,6 @@ public class BazelProjectImporter extends AbstractProjectImporter {
         }
 
         BazelClasspathManager.refreshClasspath();
-        BazelClasspathManager.forceRefreshAllContainers();
     }
 
     private void configureClasspath(IProject project, String packageName,
@@ -122,6 +121,10 @@ public class BazelProjectImporter extends AbstractProjectImporter {
 
         addJreContainerEntry(entries);
 
+        // Pre-resolve the container before setting raw classpath to prevent JDT from
+        // triggering async container resolution via ClasspathContainerInitializer.
+        // setClasspathContainer is a global JDT registry operation — it works even
+        // though the raw classpath doesn't reference the container yet.
         BazelClasspathManager.setClasspathContainer(project, targetLabel);
 
         javaProject.setRawClasspath(entries.toArray(new IClasspathEntry[0]), monitor);

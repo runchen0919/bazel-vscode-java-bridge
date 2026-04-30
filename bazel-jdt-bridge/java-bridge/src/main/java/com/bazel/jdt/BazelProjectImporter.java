@@ -18,12 +18,12 @@ import org.eclipse.core.runtime.Status;
 import org.eclipse.jdt.core.IClasspathEntry;
 import org.eclipse.jdt.core.IJavaProject;
 import org.eclipse.jdt.core.JavaCore;
-import org.eclipse.jdt.launching.JavaRuntime;
 import org.eclipse.jdt.ls.core.internal.AbstractProjectImporter;
 
 public class BazelProjectImporter extends AbstractProjectImporter {
     private static final ILog LOG = Platform.getLog(BazelProjectImporter.class);
 
+    private static final String JAVA_NATURE = "org.eclipse.jdt.core.javanature";
     private static final String[] STANDARD_SRC_ROOTS = {
         "src/main/java",
         "src/test/java",
@@ -74,13 +74,24 @@ public class BazelProjectImporter extends AbstractProjectImporter {
                 org.eclipse.core.resources.IProjectDescription desc =
                     project.getDescription();
                 String[] natureIds = desc.getNatureIds();
-                String[] newNatureIds = new String[natureIds.length + 1];
+                boolean hasJavaNature = false;
+                for (String nature : natureIds) {
+                    if (JAVA_NATURE.equals(nature)) {
+                        hasJavaNature = true;
+                        break;
+                    }
+                }
+                int extraNatures = (hasJavaNature ? 1 : 2);
+                String[] newNatureIds = new String[natureIds.length + extraNatures];
                 System.arraycopy(natureIds, 0, newNatureIds, 0, natureIds.length);
-                newNatureIds[natureIds.length] = BazelNature.NATURE_ID;
+                int idx = natureIds.length;
+                if (!hasJavaNature) {
+                    newNatureIds[idx++] = JAVA_NATURE;
+                }
+                newNatureIds[idx] = BazelNature.NATURE_ID;
                 desc.setNatureIds(newNatureIds);
                 project.setDescription(desc, monitor);
-                BazelClasspathManager.setClasspathContainer(project, targetLabel);
-                configureClasspath(project, packageName, workspacePath, monitor);
+                configureClasspath(project, packageName, workspacePath, targetLabel, monitor);
             } catch (Exception e) {
                 LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
                     "Failed to import target: " + targetLabel, e));
@@ -89,7 +100,7 @@ public class BazelProjectImporter extends AbstractProjectImporter {
     }
 
     private void configureClasspath(IProject project, String packageName,
-            String workspacePath, IProgressMonitor monitor) throws CoreException {
+            String workspacePath, String targetLabel, IProgressMonitor monitor) throws CoreException {
         IJavaProject javaProject = JavaCore.create(project);
 
         List<IClasspathEntry> entries = new ArrayList<>();
@@ -104,22 +115,29 @@ public class BazelProjectImporter extends AbstractProjectImporter {
 
         entries.add(JavaCore.newContainerEntry(BazelClasspathContainer.CONTAINER_PATH));
 
-        try {
-            IClasspathEntry jreEntry = JavaRuntime.getDefaultJREContainerEntry();
-            if (jreEntry != null) {
-                entries.add(jreEntry);
-            }
-        } catch (NoClassDefFoundError e) {
-            // org.eclipse.jdt.launching may not be available in all JDT.LS runtimes.
-            // The JRE container is optional — source entries + Bazel deps are sufficient
-            // for basic operation. Log and continue without it.
-            LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
-                "JRE container entry not available (org.eclipse.jdt.launching not resolved). "
-                + "Classpath will omit system library entries.", e));
-        }
+        addJreContainerEntry(entries);
 
         javaProject.setRawClasspath(entries.toArray(new IClasspathEntry[0]), monitor);
         javaProject.setOutputLocation(new Path("/" + project.getName() + "/bin"), monitor);
+
+        BazelClasspathManager.setClasspathContainer(project, targetLabel);
+    }
+
+    private void addJreContainerEntry(List<IClasspathEntry> entries) {
+        try {
+            Class<?> javaRuntimeClass = Class.forName("org.eclipse.jdt.launching.JavaRuntime");
+            java.lang.reflect.Method method = javaRuntimeClass.getMethod("getDefaultJREContainerEntry");
+            Object jreEntry = method.invoke(null);
+            if (jreEntry instanceof IClasspathEntry) {
+                entries.add((IClasspathEntry) jreEntry);
+                return;
+            }
+        } catch (ReflectiveOperationException e) {
+            LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                "Using fallback JRE container: " + e.getMessage()));
+        }
+        entries.add(JavaCore.newContainerEntry(
+            Path.fromPortableString("org.eclipse.jdt.launching.JRE_CONTAINER")));
     }
 
     @Override

@@ -39,11 +39,17 @@ public class BazelProjectImporter extends AbstractProjectImporter {
 
     @Override
     public void importToWorkspace(IProgressMonitor monitor) throws CoreException {
+        BazelBridge bridge = BazelBridge.getInstance();
+        if (bridge.isInitialized()) {
+            LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                "Bridge already initialized, skipping re-import"));
+            return;
+        }
+
         String workspacePath = rootFolder.getAbsolutePath();
         String bazelPath = "bazel";
         String cacheDir = BazelCommandHandler.DEFAULT_CACHE_DIR;
 
-        BazelBridge bridge = BazelBridge.getInstance();
         bridge.initialize(workspacePath, bazelPath, cacheDir);
         LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
             "Importing Bazel workspace: " + workspacePath));
@@ -66,41 +72,56 @@ public class BazelProjectImporter extends AbstractProjectImporter {
             try {
                 String packageName = extractPackageName(targetLabel);
                 IProject project = workspaceRoot.getProject(packageName);
+
+                boolean projectExisted = project.exists() && project.isOpen();
                 if (!project.exists()) {
                     project.create(monitor);
                 }
                 if (!project.isOpen()) {
                     project.open(monitor);
                 }
+
                 org.eclipse.core.resources.IProjectDescription desc =
                     project.getDescription();
                 String[] natureIds = desc.getNatureIds();
                 boolean hasJavaNature = false;
+                boolean hasBazelNature = false;
                 for (String nature : natureIds) {
                     if (JAVA_NATURE.equals(nature)) {
                         hasJavaNature = true;
-                        break;
+                    }
+                    if (BazelNature.NATURE_ID.equals(nature)) {
+                        hasBazelNature = true;
                     }
                 }
-                int extraNatures = (hasJavaNature ? 1 : 2);
-                String[] newNatureIds = new String[natureIds.length + extraNatures];
-                System.arraycopy(natureIds, 0, newNatureIds, 0, natureIds.length);
-                int idx = natureIds.length;
-                if (!hasJavaNature) {
-                    newNatureIds[idx++] = JAVA_NATURE;
+
+                if (!hasJavaNature || !hasBazelNature) {
+                    int extraNatures = (hasJavaNature ? 0 : 1) + (hasBazelNature ? 0 : 1);
+                    String[] newNatureIds = new String[natureIds.length + extraNatures];
+                    System.arraycopy(natureIds, 0, newNatureIds, 0, natureIds.length);
+                    int idx = natureIds.length;
+                    if (!hasJavaNature) {
+                        newNatureIds[idx++] = JAVA_NATURE;
+                    }
+                    if (!hasBazelNature) {
+                        newNatureIds[idx] = BazelNature.NATURE_ID;
+                    }
+                    desc.setNatureIds(newNatureIds);
+                    project.setDescription(desc, monitor);
                 }
-                newNatureIds[idx] = BazelNature.NATURE_ID;
-                desc.setNatureIds(newNatureIds);
-                project.setDescription(desc, monitor);
+
                 TargetProjectMapping.appendTargets(project, Collections.singletonList(targetLabel));
-                configureClasspath(project, packageName, workspacePath, targetLabel, monitor);
+
+                if (!projectExisted) {
+                    configureClasspath(project, packageName, workspacePath, targetLabel, monitor);
+                } else {
+                    BazelClasspathManager.setClasspathContainer(project, targetLabel);
+                }
             } catch (Exception e) {
                 LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
                     "Failed to import target: " + targetLabel, e));
             }
         }
-
-        BazelClasspathManager.refreshClasspath();
     }
 
     private void configureClasspath(IProject project, String packageName,

@@ -30,4 +30,9 @@ public class BazelProjectImporterTest {
     public void extractPackageNameMultipleColons() {
         assertEquals("a:b", LabelUtils.extractPackageName("//a:b:c"));
     }
+
+    @Test
+    public void bazelNatureIdConstant() {
+        assertEquals("com.bazel.jdt.bazelNature", BazelNature.NATURE_ID);
+    }
 }

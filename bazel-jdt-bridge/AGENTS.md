@@ -76,7 +76,6 @@ All take `JNIEnv` + `jlong` handle (pointer to `BazelJdtState`). Handle is creat
 
 ## ANTI-PATTERNS
 
-- `BazelClasspathContainer.java` line 19: `if (rawEntries != null)` is backwards — returns empty when data exists, parsing loop is dead code
 - `BazelClasspathManager.java`: 3 silent `catch (Exception e)` blocks
 - `BazelProjectImporter.java` line 69: completely empty `catch (Exception e) { }`
 - `classpath.rs::filter_by_visibility()`: no-op placeholder method
@@ -86,7 +85,7 @@ All take `JNIEnv` + `jlong` handle (pointer to `BazelJdtState`). Handle is creat
 - Release pipeline: cross-compiled native libs may not reach final VSIX (artifact download step missing)
 - `build-native.sh` targets `x86_64-pc-windows-gnu` but `release.yml` uses `x86_64-pc-windows-msvc`
 - `package-extension.sh` uses `|| true` after vsce packaging — silently swallows errors
-- `tests/e2e/` and `tests/stress/` are empty — no integration/stress tests exist
+- OSGi bundle may not load in some JDT.LS environments due to `Require-Bundle` version mismatch
 
 ## BUILD ORDER
 

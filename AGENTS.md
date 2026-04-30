@@ -79,7 +79,6 @@ bazel-graph → bazel-parser
 ## ANTI-PATTERNS (THIS PROJECT)
 
 - **Empty catch blocks in Java**: `BazelClasspathManager` (3 places) and `BazelProjectImporter` (1 place) silently swallow exceptions
-- **Dead code bug**: `BazelClasspathContainer` constructor — `if (rawEntries != null)` early-returns empty, making parsing loop unreachable (likely should be `== null`)
 - **No-op method**: `classpath.rs::filter_by_visibility()` body is empty placeholder
 - **JNI use-after-free risk**: No lifetime/generation tracking on JNI handle — calling after `nativeShutdown` is UB
 

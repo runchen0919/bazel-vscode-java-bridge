@@ -130,7 +130,7 @@ impl BazelJdtState {
         }
         let count = parsed.len();
         let mut graph = self.graph.lock().unwrap_or_else(|e| e.into_inner());
-        graph.populate_from_parsed_batch(&parsed);
+        graph.populate_from_parsed_batch(&parsed, &self.workspace_root);
         Ok(count)
     }
 }

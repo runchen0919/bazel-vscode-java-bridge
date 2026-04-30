@@ -159,10 +159,14 @@ impl DependencyGraph {
     }
 
     /// Populate graph from a parsed BUILD file.
-    /// Computes the Bazel package label from the file path and creates
-    /// target nodes and dependency edges from Java rules.
-    pub fn populate_from_parsed(&mut self, file: &bazel_parser::model::ParsedBuildFile) {
-        let package_label = compute_package_label_from_build_path(&file.path);
+    /// Computes the Bazel package label from the file path (relative to workspace root)
+    /// and creates target nodes and dependency edges from Java rules.
+    pub fn populate_from_parsed(
+        &mut self,
+        file: &bazel_parser::model::ParsedBuildFile,
+        workspace_root: &std::path::Path,
+    ) {
+        let package_label = compute_package_label_from_build_path(&file.path, workspace_root);
         for rule in &file.rules {
             let target_label = format!("{}:{}", package_label, rule.name);
             self.add_target(&target_label);
@@ -179,9 +183,13 @@ impl DependencyGraph {
     }
 
     /// Populate graph from multiple parsed BUILD files.
-    pub fn populate_from_parsed_batch(&mut self, files: &[bazel_parser::model::ParsedBuildFile]) {
+    pub fn populate_from_parsed_batch(
+        &mut self,
+        files: &[bazel_parser::model::ParsedBuildFile],
+        workspace_root: &std::path::Path,
+    ) {
         for file in files {
-            self.populate_from_parsed(file);
+            self.populate_from_parsed(file, workspace_root);
         }
     }
 
@@ -191,18 +199,27 @@ impl DependencyGraph {
     }
 }
 
-/// Compute Bazel package label from a BUILD file path.
-/// e.g., `/workspace/foo/bar/BUILD` → `//foo/bar`
-fn compute_package_label_from_build_path(path: &std::path::Path) -> String {
-    if let Some(parent) = path.parent() {
-        let path_str = parent.to_string_lossy();
+/// Compute Bazel package label from a BUILD file path relative to workspace root.
+/// e.g., `/workspace/foo/bar/BUILD` with root `/workspace` → `//foo/bar`
+fn compute_package_label_from_build_path(
+    path: &std::path::Path,
+    workspace_root: &std::path::Path,
+) -> String {
+    if let Ok(relative) = path.parent().unwrap_or(path).strip_prefix(workspace_root) {
+        let rel_str = relative.to_string_lossy().replace('\\', "/");
+        if rel_str.is_empty() {
+            "//".to_string()
+        } else {
+            format!("//{}", rel_str)
+        }
+    } else {
+        let parent = path.parent().unwrap_or(path);
+        let path_str = parent.to_string_lossy().replace('\\', "/");
         if path_str.is_empty() {
             "//".to_string()
         } else {
-            format!("//{}", path_str.replace('\\', "/"))
+            format!("//{}", path_str)
         }
-    } else {
-        "//".to_string()
     }
 }
 
@@ -217,7 +234,7 @@ mod tests {
     use super::*;
     use bazel_aspect::{ArtifactLocation, JarInfo, JavaIdeInfo, TargetIdeInfo};
     use bazel_parser::model::{JavaRule, LoadStatement, ParsedBuildFile, RuleType};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn make_target(label: &str, deps: Vec<&str>, jar_paths: Vec<&str>) -> TargetIdeInfo {
         let jars: Vec<JarInfo> = jar_paths
@@ -298,6 +315,7 @@ mod tests {
     #[test]
     fn test_populate_from_parsed_basic() {
         let mut graph = DependencyGraph::new();
+        let workspace_root = PathBuf::from("/workspace");
         let parsed = ParsedBuildFile {
             path: PathBuf::from("/workspace/foo/bar/BUILD"),
             content_hash: String::new(),
@@ -319,14 +337,14 @@ mod tests {
             }],
         };
 
-        graph.populate_from_parsed(&parsed);
+        graph.populate_from_parsed(&parsed, &workspace_root);
 
         assert_eq!(graph.target_count(), 3);
-        assert!(graph.has_target("///workspace/foo/bar:mylib"));
+        assert!(graph.has_target("//foo/bar:mylib"));
         assert!(graph.has_target("//common:utils"));
         assert!(graph.has_target("//runtime:dep"));
 
-        let deps = graph.transitive_deps("///workspace/foo/bar:mylib").unwrap();
+        let deps = graph.transitive_deps("//foo/bar:mylib").unwrap();
         assert!(deps.contains(&"//common:utils".to_string()));
     }
 
@@ -340,7 +358,7 @@ mod tests {
             loads: vec![],
         };
 
-        graph.populate_from_parsed(&parsed);
+        graph.populate_from_parsed(&parsed, Path::new("/workspace"));
         assert_eq!(graph.target_count(), 0);
     }
 
@@ -384,11 +402,11 @@ mod tests {
             },
         ];
 
-        graph.populate_from_parsed_batch(&files);
+        graph.populate_from_parsed_batch(&files, Path::new("/workspace"));
 
-        assert_eq!(graph.target_count(), 3);
-        assert!(graph.has_target("///workspace/a:lib_a"));
-        assert!(graph.has_target("///workspace/b:lib_b"));
+        assert_eq!(graph.target_count(), 2);
+        assert!(graph.has_target("//a:lib_a"));
+        assert!(graph.has_target("//b:lib_b"));
     }
 
     #[test]

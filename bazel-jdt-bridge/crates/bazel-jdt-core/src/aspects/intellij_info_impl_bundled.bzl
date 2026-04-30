@@ -386,6 +386,90 @@ def collect_cpp_info(target, ctx, semantics, ide_info, ide_info_file, output_gro
     update_sync_output_groups(output_groups, "intellij-resolve-cpp", resolve_files)
     return True
 
+def _collect_java_output_jars(target):
+    """Collects JAR outputs from JavaInfo, handling both legacy and modern APIs."""
+    java_info = target[JavaInfo]
+    jars = []
+
+    # Modern Bazel (6+): java_info.java_outputs
+    if hasattr(java_info, "java_outputs"):
+        for java_output in java_info.java_outputs:
+            class_jar = getattr(java_output, "class_jar", None)
+            source_jar = getattr(java_output, "source_jar", None)
+            interface_jar = getattr(java_output, "compile_jar", None)
+
+            jars.append(struct_omit_none(
+                jar = artifact_location(class_jar),
+                source_jar = artifact_location(source_jar),
+                interface_jar = artifact_location(interface_jar),
+            ))
+
+    # Legacy Bazel: java_info.outputs.jars
+    elif hasattr(java_info, "outputs") and hasattr(java_info.outputs, "jars"):
+        for output_jar in java_info.outputs.jars:
+            class_jar = getattr(output_jar, "class_jar", None)
+            source_jar = getattr(output_jar, "source_jar", None)
+            interface_jar = getattr(output_jar, "ief_jar", None)
+
+            jars.append(struct_omit_none(
+                jar = artifact_location(class_jar),
+                source_jar = artifact_location(source_jar),
+                interface_jar = artifact_location(interface_jar),
+            ))
+
+    return jars
+
+def collect_java_info(target, ctx, semantics, ide_info, ide_info_file, output_groups):
+    """Updates Java-specific output groups, returns false if not a Java target."""
+
+    if JavaInfo not in target:
+        return False
+
+    java_info = target[JavaInfo]
+
+    jars = _collect_java_output_jars(target)
+
+    compile_jars = []
+    if hasattr(java_info, "compile_jars"):
+        compile_jars = [artifact_location(f) for f in java_info.compile_jars.to_list()]
+
+    runtime_jars = []
+    if hasattr(java_info, "runtime_output_jars"):
+        runtime_jars = [artifact_location(f) for f in java_info.runtime_output_jars.to_list()]
+    elif hasattr(java_info, "transitive_runtime_jars"):
+        runtime_jars = [artifact_location(f) for f in java_info.transitive_runtime_jars.to_list()]
+
+    sources = []
+    if hasattr(java_info, "source_jars"):
+        sources = [artifact_location(f) for f in java_info.source_jars.to_list()]
+
+    annotation_processors = []
+    if hasattr(java_info, "annotation_processing") and java_info.annotation_processing != None:
+        annotation_processors = [str(p) for p in java_info.annotation_processing.processor_classnames]
+
+    main_class = getattr(ctx.rule.attr, "main_class", None)
+    test_class = getattr(ctx.rule.attr, "test_class", None)
+
+    java_ide_info = struct_omit_none(
+        jars = jars if jars else None,
+        compile_jars = compile_jars if compile_jars else None,
+        runtime_jars = runtime_jars if runtime_jars else None,
+        sources = sources if sources else None,
+        annotation_processors = annotation_processors if annotation_processors else None,
+        main_class = main_class,
+        test_class = test_class,
+    )
+
+    ide_info["java_ide_info"] = java_ide_info
+
+    resolve_files = java_info.compile_jars if hasattr(java_info, "compile_jars") else depset([])
+    compile_files = java_info.transitive_deps if hasattr(java_info, "transitive_deps") else depset([])
+
+    update_set_in_dict(output_groups, "intellij-info-java", depset([ide_info_file]))
+    update_set_in_dict(output_groups, "intellij-compile-java", depset(compile_files.to_list()))
+    update_set_in_dict(output_groups, "intellij-resolve-java", depset(resolve_files.to_list()))
+    return True
+
 def collect_c_toolchain_info(target, ctx, semantics, ide_info, ide_info_file, output_groups):
     """Updates cc_toolchain-relevant output groups, returns false if not a cc_toolchain target."""
 
@@ -604,6 +688,7 @@ def intellij_info_aspect_impl(target, ctx, semantics):
     ide_info["test_info"] = build_test_info(ctx)
 
     handled = False
+    handled = collect_java_info(target, ctx, semantics, ide_info, ide_info_file, output_groups) or handled
     handled = collect_py_info(target, ctx, semantics, ide_info, ide_info_file, output_groups) or handled
     handled = collect_cpp_info(target, ctx, semantics, ide_info, ide_info_file, output_groups) or handled
     handled = collect_c_toolchain_info(target, ctx, semantics, ide_info, ide_info_file, output_groups) or handled

@@ -329,22 +329,38 @@ impl<'a> TextProtoParser<'a> {
     pub fn parse_target_ide_info(&mut self) -> ParseResult<TargetIdeInfo> {
         let mut result = ParseResult::new(TargetIdeInfo::new(String::new(), String::new()));
         let mut fields: HashMap<String, ProtoValue> = HashMap::new();
+        let mut extra_fields: Vec<(String, ProtoValue)> = Vec::new();
 
         while self.current_token != Token::Eof {
             match self.parse_field() {
-                Ok((name, value)) => match (fields.get(&name), value) {
-                    (Some(ProtoValue::Strings(existing)), ProtoValue::String(new)) => {
-                        let mut updated = existing.clone();
-                        updated.push(new);
-                        fields.insert(name, ProtoValue::Strings(updated));
+                Ok((name, value)) => {
+                    let existing = fields.remove(&name);
+                    match (existing, value) {
+                        (Some(ProtoValue::Strings(existing)), ProtoValue::String(new)) => {
+                            let mut updated = existing;
+                            updated.push(new);
+                            fields.insert(name, ProtoValue::Strings(updated));
+                        }
+                        (Some(ProtoValue::String(old)), ProtoValue::String(new)) => {
+                            fields.insert(name, ProtoValue::Strings(vec![old, new]));
+                        }
+                        (Some(ProtoValue::Messages(existing)), ProtoValue::Message(new)) => {
+                            let mut updated = existing;
+                            updated.push(new);
+                            fields.insert(name, ProtoValue::Messages(updated));
+                        }
+                        (Some(ProtoValue::Message(old)), ProtoValue::Message(new)) => {
+                            fields.insert(name, ProtoValue::Messages(vec![old, new]));
+                        }
+                        (None, value) => {
+                            fields.insert(name, value);
+                        }
+                        (Some(old), value) => {
+                            extra_fields.push((name.clone(), old));
+                            fields.insert(name, value);
+                        }
                     }
-                    (Some(ProtoValue::String(old)), ProtoValue::String(new)) => {
-                        fields.insert(name, ProtoValue::Strings(vec![old.clone(), new]));
-                    }
-                    (_, value) => {
-                        fields.insert(name, value);
-                    }
-                },
+                }
                 Err(e) => {
                     result.add_error(e);
                     self.skip_to_next_field();
@@ -365,21 +381,37 @@ impl<'a> TextProtoParser<'a> {
         if let Some(ProtoValue::Message(m)) = fields.remove("java_info") {
             result.value.java_info = Some(self.extract_java_ide_info(m));
         }
-        match fields.remove("deps") {
-            Some(ProtoValue::Strings(s)) => result.value.deps = s,
-            Some(ProtoValue::String(s)) => result.value.deps = vec![s],
-            _ => {}
+        if result.value.java_info.is_none() {
+            if let Some(ProtoValue::Message(m)) = fields.remove("java_ide_info") {
+                result.value.java_info = Some(self.extract_java_ide_info(m));
+            }
         }
-        match fields.remove("runtime_deps") {
-            Some(ProtoValue::Strings(s)) => result.value.runtime_deps = s,
-            Some(ProtoValue::String(s)) => result.value.runtime_deps = vec![s],
-            _ => {}
+        let mut deps = Vec::new();
+        for (key, value) in &extra_fields {
+            if key == "deps" {
+                deps.extend(Self::extract_deps_from_value(Some(value.clone())));
+            }
         }
-        match fields.remove("exports") {
-            Some(ProtoValue::Strings(s)) => result.value.exports = s,
-            Some(ProtoValue::String(s)) => result.value.exports = vec![s],
-            _ => {}
+        deps.extend(Self::extract_deps_from_value(fields.remove("deps")));
+        result.value.deps = deps;
+
+        let mut runtime_deps = Vec::new();
+        for (key, value) in &extra_fields {
+            if key == "runtime_deps" {
+                runtime_deps.extend(Self::extract_deps_from_value(Some(value.clone())));
+            }
         }
+        runtime_deps.extend(Self::extract_deps_from_value(fields.remove("runtime_deps")));
+        result.value.runtime_deps = runtime_deps;
+
+        let mut exports = Vec::new();
+        for (key, value) in &extra_fields {
+            if key == "exports" {
+                exports.extend(Self::extract_deps_from_value(Some(value.clone())));
+            }
+        }
+        exports.extend(Self::extract_deps_from_value(fields.remove("exports")));
+        result.value.exports = exports;
 
         result
     }
@@ -560,6 +592,33 @@ impl<'a> TextProtoParser<'a> {
             if self.advance().is_err() {
                 break;
             }
+        }
+    }
+
+    // Format: { dependency_type: 0 target { label: "//pkg:target" } }
+    fn extract_label_from_dep_message(fields: &HashMap<String, ProtoValue>) -> Option<String> {
+        if let Some(ProtoValue::Message(target_msg)) = fields.get("target") {
+            if let Some(ProtoValue::String(label)) = target_msg.get("label") {
+                return Some(label.clone());
+            }
+        }
+        None
+    }
+
+    fn extract_deps_from_value(value: Option<ProtoValue>) -> Vec<String> {
+        match value {
+            Some(ProtoValue::String(s)) => vec![s],
+            Some(ProtoValue::Strings(s)) => s,
+            Some(ProtoValue::Message(msg)) => {
+                Self::extract_label_from_dep_message(&msg)
+                    .into_iter()
+                    .collect()
+            }
+            Some(ProtoValue::Messages(msgs)) => msgs
+                .iter()
+                .filter_map(Self::extract_label_from_dep_message)
+                .collect(),
+            _ => Vec::new(),
         }
     }
 
@@ -778,5 +837,107 @@ mod tests {
         let result = parse_text_proto(input);
         assert_eq!(result.value.label, "//foo:bar");
         assert_eq!(result.value.kind, "java_library");
+    }
+
+    #[test]
+    fn test_parse_nested_message_deps() {
+        let input = r#"
+            label: "//app:app"
+            kind: "java_library"
+            deps {
+                dependency_type: 0
+                target {
+                    label: "//greeter:greeter"
+                    configuration: "k8-fastbuild"
+                }
+            }
+            deps {
+                dependency_type: 1
+                target {
+                    label: "//common:util"
+                }
+            }
+        "#;
+
+        let result = parse_text_proto(input);
+        assert_eq!(result.value.deps, vec!["//greeter:greeter", "//common:util"]);
+    }
+
+    #[test]
+    fn test_parse_mixed_flat_and_nested_deps() {
+        let input = r#"
+            label: "//app:app"
+            kind: "java_library"
+            deps: "//flat:dep"
+            deps {
+                dependency_type: 0
+                target {
+                    label: "//nested:dep"
+                }
+            }
+        "#;
+
+        let result = parse_text_proto(input);
+        assert_eq!(result.value.deps, vec!["//flat:dep", "//nested:dep"]);
+    }
+
+    #[test]
+    fn test_parse_nested_runtime_deps_and_exports() {
+        let input = r#"
+            label: "//app:app"
+            kind: "java_library"
+            runtime_deps {
+                target {
+                    label: "//runtime:lib"
+                }
+            }
+            exports {
+                target {
+                    label: "//exported:api"
+                }
+            }
+        "#;
+
+        let result = parse_text_proto(input);
+        assert_eq!(result.value.runtime_deps, vec!["//runtime:lib"]);
+        assert_eq!(result.value.exports, vec!["//exported:api"]);
+    }
+
+    #[test]
+    fn test_parse_java_ide_info_field_name() {
+        let input = r#"
+            label: "//foo:bar"
+            kind: "java_library"
+            java_ide_info {
+                jars {
+                    jar {
+                        relative_path: "bazel-out/bin/foo/bar.jar"
+                        is_source: false
+                    }
+                    source_jar {
+                        relative_path: "bazel-out/bin/foo/bar-src.jar"
+                        is_source: false
+                    }
+                }
+                main_class: "com.example.Main"
+            }
+        "#;
+
+        let result = parse_text_proto(input);
+        assert!(result.value.java_info.is_some());
+
+        let java_info = result.value.java_info.as_ref().unwrap();
+        assert_eq!(java_info.jars.len(), 1);
+        assert_eq!(
+            java_info.jars[0].jar.relative_path.as_deref(),
+            Some("bazel-out/bin/foo/bar.jar")
+        );
+        assert_eq!(
+            java_info.jars[0]
+                .source_jar
+                .as_ref()
+                .and_then(|s| s.relative_path.as_deref()),
+            Some("bazel-out/bin/foo/bar-src.jar")
+        );
     }
 }

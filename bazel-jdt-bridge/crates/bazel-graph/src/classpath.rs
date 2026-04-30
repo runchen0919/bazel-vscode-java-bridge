@@ -97,7 +97,8 @@ impl ComputedClasspath {
         let mut seen_jars = std::collections::HashSet::new();
 
         for dep_label in &deps {
-            if let Some(jars) = graph.get_target_jars(dep_label) {
+            let has_jars = if let Some(jars) = graph.get_target_jars(dep_label) {
+                let mut added = false;
                 for jar in jars {
                     if seen_jars.insert(jar.clone()) {
                         entries.push(ClasspathEntry {
@@ -109,19 +110,25 @@ impl ComputedClasspath {
                             access_rules: Vec::new(),
                             visibility: Visibility::default(),
                         });
+                        added = true;
                     }
                 }
-            }
+                added
+            } else {
+                false
+            };
 
-            entries.push(ClasspathEntry {
-                entry_type: ClasspathEntryType::Project,
-                path: dep_label.clone(),
-                source_attachment_path: None,
-                is_test,
-                is_exported: false,
-                access_rules: Vec::new(),
-                visibility: Visibility::default(),
-            });
+            if !has_jars {
+                entries.push(ClasspathEntry {
+                    entry_type: ClasspathEntryType::Project,
+                    path: dep_label.clone(),
+                    source_attachment_path: None,
+                    is_test,
+                    is_exported: false,
+                    access_rules: Vec::new(),
+                    visibility: Visibility::default(),
+                });
+            }
         }
 
         let output_jars = graph

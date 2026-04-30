@@ -356,6 +356,43 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeComputeClasspath(
     let graph = state.graph.lock().unwrap_or_else(|e| e.into_inner());
     match bazel_graph::ComputedClasspath::compute_for(&graph, &label, target_kind) {
         Ok(computed) => {
+            let has_jars = computed.entries.iter().any(|e| {
+                matches!(e.entry_type, bazel_graph::ClasspathEntryType::Library)
+            });
+            if !has_jars {
+                // Fast path (BUILD file parsing) produced no JAR info — fall through
+                // to slow path (aspect resolution) to get actual compiled JARs.
+                drop(graph);
+                log::info!(
+                    "Fast path produced no LIB entries for '{}', falling back to aspect resolution",
+                    label
+                );
+                return match run_full_resolution(state, &label, state.shutdown_signal()) {
+                    Ok(resolved) => {
+                        let entries = resolved.to_pipe_delimited_entries();
+                        if let Ok(json) = serde_json::to_string(&resolved) {
+                            let _ = state.cache.put_classpath(&label, &json);
+                        }
+                        state.set_sync_state(SyncState::Idle);
+                        match create_string_array(&mut env, &entries) {
+                            Ok(arr) => arr,
+                            Err(_) => std::ptr::null_mut(),
+                        }
+                    }
+                    Err(resolution_err) => {
+                        state.set_sync_state(SyncState::Error);
+                        let _ = env.throw_new(
+                            "java/lang/RuntimeException",
+                            format!(
+                                "Classpath resolution failed for '{}': {}. \
+                                 Try running 'bazel-jdt.cleanCache' then reimporting.",
+                                label, resolution_err
+                            ),
+                        );
+                        std::ptr::null_mut()
+                    }
+                };
+            }
             let entries = computed.to_pipe_delimited_entries();
             drop(graph);
             if let Ok(json) = serde_json::to_string(&computed) {

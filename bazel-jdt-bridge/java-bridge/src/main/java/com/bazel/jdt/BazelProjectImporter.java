@@ -9,14 +9,25 @@ import org.eclipse.core.resources.IWorkspaceRoot;
 import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.ILog;
+import org.eclipse.core.runtime.IPath;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.IStatus;
+import org.eclipse.core.runtime.Path;
 import org.eclipse.core.runtime.Platform;
 import org.eclipse.core.runtime.Status;
+import org.eclipse.jdt.core.IClasspathEntry;
+import org.eclipse.jdt.core.IJavaProject;
+import org.eclipse.jdt.core.JavaCore;
+import org.eclipse.jdt.launching.JavaRuntime;
 import org.eclipse.jdt.ls.core.internal.AbstractProjectImporter;
 
 public class BazelProjectImporter extends AbstractProjectImporter {
     private static final ILog LOG = Platform.getLog(BazelProjectImporter.class);
+
+    private static final String[] STANDARD_SRC_ROOTS = {
+        "src/main/java",
+        "src/test/java",
+    };
 
     @Override
     public boolean applies(IProgressMonitor monitor) {
@@ -69,11 +80,37 @@ public class BazelProjectImporter extends AbstractProjectImporter {
                 desc.setNatureIds(newNatureIds);
                 project.setDescription(desc, monitor);
                 BazelClasspathManager.setClasspathContainer(project, targetLabel);
+                configureClasspath(project, packageName, workspacePath, monitor);
             } catch (Exception e) {
                 LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
                     "Failed to import target: " + targetLabel, e));
             }
         }
+    }
+
+    private void configureClasspath(IProject project, String packageName,
+            String workspacePath, IProgressMonitor monitor) throws CoreException {
+        IJavaProject javaProject = JavaCore.create(project);
+
+        List<IClasspathEntry> entries = new ArrayList<>();
+
+        for (String srcRoot : STANDARD_SRC_ROOTS) {
+            java.io.File srcDir = new java.io.File(workspacePath, packageName + "/" + srcRoot);
+            if (srcDir.isDirectory()) {
+                IPath sourcePath = new Path("/" + project.getName() + "/" + srcRoot);
+                entries.add(JavaCore.newSourceEntry(sourcePath));
+            }
+        }
+
+        entries.add(JavaCore.newContainerEntry(BazelClasspathContainer.CONTAINER_PATH));
+
+        IClasspathEntry jreEntry = JavaRuntime.getDefaultJREContainerEntry();
+        if (jreEntry != null) {
+            entries.add(jreEntry);
+        }
+
+        javaProject.setRawClasspath(entries.toArray(new IClasspathEntry[0]), monitor);
+        javaProject.setOutputLocation(new Path("/" + project.getName() + "/bin"), monitor);
     }
 
     @Override

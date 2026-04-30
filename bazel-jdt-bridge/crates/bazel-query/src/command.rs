@@ -99,7 +99,7 @@ impl BazelInvoker {
             .args([
                 "build",
                 &format!("--aspects={}", aspect_file),
-                "--output_groups=intellij-info-java",
+                "--output_groups=intellij-info-generic",
                 &targets_arg,
             ])
             .output()

@@ -60,14 +60,21 @@
         "redhat.java"
     ],
     "devDependencies": {
+        "@types/mocha": "^10.0.9",
         "@types/node": "^18.19.130",
         "@types/vscode": "^1.85.0",
+        "@vscode/test-electron": "^2.4.0",
         "esbuild": "^0.20.0",
+        "glob": "^8.1.0",
+        "mocha": "^10.8.0",
         "ts-node": "^10.9.2",
         "typescript": "^5.4.0"
     },
     "scripts": {
         "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node18 --sourcemap",
-        "watch": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node18 --sourcemap --watch"
+        "watch": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node18 --sourcemap --watch",
+        "build-tests": "node scripts/build-tests.mjs",
+        "e2e": "npm run build-tests && NODE_PATH=./node_modules node ../tests/e2e/out/runTests.js",
+        "e2e:full": "npm run e2e && TEST_WORKSPACE=maven-deps-project npm run e2e && TEST_WORKSPACE=multi-module-project npm run e2e"
     }
 }

@@ -119,6 +119,9 @@ impl ComputedClasspath {
             };
 
             if !has_jars {
+                if dep_label.starts_with("@@") {
+                    continue;
+                }
                 entries.push(ClasspathEntry {
                     entry_type: ClasspathEntryType::Project,
                     path: dep_label.clone(),
@@ -241,5 +244,105 @@ impl ComputedClasspath {
                 )
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bazel_aspect::{ArtifactLocation, JarInfo, JavaIdeInfo, TargetIdeInfo};
+
+    fn make_target(label: &str, deps: Vec<&str>, jar_paths: Vec<&str>) -> TargetIdeInfo {
+        let jars: Vec<JarInfo> = jar_paths
+            .iter()
+            .map(|p| JarInfo {
+                jar: ArtifactLocation {
+                    absolute_path: Some(p.to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .collect();
+
+        TargetIdeInfo {
+            label: label.to_string(),
+            kind: "java_library".to_string(),
+            build_file: None,
+            java_info: if jars.is_empty() && deps.is_empty() {
+                None
+            } else {
+                Some(JavaIdeInfo {
+                    jars,
+                    ..Default::default()
+                })
+            },
+            deps: deps.iter().map(|s| s.to_string()).collect(),
+            runtime_deps: Vec::new(),
+            exports: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_toolchain_targets_filtered_from_proj_entries() {
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target("//app:app", vec!["@rules_java//java:toolchain", "@@rules_cc++ext//:compiler"], vec!["/app.jar"]),
+            make_target("@rules_java//java:toolchain", vec![], vec![]),
+            make_target("@@rules_cc++ext//:compiler", vec![], vec![]),
+        ];
+
+        graph.populate_from_aspects(&results);
+        let cp = ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary).unwrap();
+
+        let proj_entries: Vec<&ClasspathEntry> = cp.entries.iter()
+            .filter(|e| e.entry_type == ClasspathEntryType::Project)
+            .collect();
+
+        for entry in &proj_entries {
+            assert!(!entry.path.starts_with("@@"), "Expected no @@ entries, got: {}", entry.path);
+        }
+    }
+
+    #[test]
+    fn test_regular_proj_entries_preserved() {
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target("//app:app", vec!["//lib:utils"], vec!["/app.jar"]),
+            make_target("//lib:utils", vec![], vec![]),
+        ];
+
+        graph.populate_from_aspects(&results);
+        let cp = ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary).unwrap();
+
+        let proj_paths: Vec<&str> = cp.entries.iter()
+            .filter(|e| e.entry_type == ClasspathEntryType::Project)
+            .map(|e| e.path.as_str())
+            .collect();
+
+        assert!(proj_paths.contains(&"//lib:utils"), "Expected //lib:utils PROJ entry, got: {:?}", proj_paths);
+    }
+
+    #[test]
+    fn test_mixed_deps_filters_only_at_at() {
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target("//app:app", vec!["//lib:utils", "@@toolchain//:tc", "//lib:api"], vec!["/app.jar"]),
+            make_target("//lib:utils", vec![], vec![]),
+            make_target("@@toolchain//:tc", vec![], vec![]),
+            make_target("//lib:api", vec![], vec![]),
+        ];
+
+        graph.populate_from_aspects(&results);
+        let cp = ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary).unwrap();
+
+        let proj_paths: Vec<&str> = cp.entries.iter()
+            .filter(|e| e.entry_type == ClasspathEntryType::Project)
+            .map(|e| e.path.as_str())
+            .collect();
+
+        assert_eq!(proj_paths.len(), 2);
+        assert!(proj_paths.contains(&"//lib:utils"));
+        assert!(proj_paths.contains(&"//lib:api"));
+        assert!(!proj_paths.iter().any(|p| p.starts_with("@@")));
     }
 }

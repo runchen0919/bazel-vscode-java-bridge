@@ -5,6 +5,8 @@ import java.util.List;
 
 import org.eclipse.core.runtime.IPath;
 import org.eclipse.core.runtime.Path;
+import org.eclipse.jdt.core.IAccessRule;
+import org.eclipse.jdt.core.IClasspathAttribute;
 import org.eclipse.jdt.core.IClasspathContainer;
 import org.eclipse.jdt.core.IClasspathEntry;
 import org.eclipse.jdt.core.JavaCore;
@@ -39,11 +41,21 @@ public class BazelClasspathContainer implements IClasspathContainer {
         String path = parts[1];
         String sourcePath = parts.length > 2 && !parts[2].isEmpty() ? parts[2] : null;
         boolean isTest = parts.length > 3 && Boolean.parseBoolean(parts[3]);
+        boolean isExported = parts.length > 4 && Boolean.parseBoolean(parts[4]);
+        String accessRulesStr = parts.length > 5 ? parts[5] : "";
         switch (type) {
             case "LIB":
                 IPath jarPath = Path.fromPortableString(path);
                 IPath srcPath = sourcePath != null ? Path.fromPortableString(sourcePath) : null;
-                return JavaCore.newLibraryEntry(jarPath, srcPath, null);
+                IAccessRule[] accessRules = parseAccessRules(accessRulesStr);
+                List<IClasspathAttribute> attributes = new ArrayList<>();
+                if (isTest) {
+                    attributes.add(JavaCore.newClasspathAttribute(IClasspathAttribute.TEST, "true"));
+                }
+                return JavaCore.newLibraryEntry(jarPath, srcPath, null,
+                    accessRules,
+                    attributes.toArray(new IClasspathAttribute[0]),
+                    isExported);
             case "PROJ":
                 if (path.startsWith("@@")) {
                     return null;
@@ -55,6 +67,27 @@ public class BazelClasspathContainer implements IClasspathContainer {
             default:
                 return null;
         }
+    }
+
+    private IAccessRule[] parseAccessRules(String rulesStr) {
+        if (rulesStr == null || rulesStr.isEmpty()) {
+            return new IAccessRule[0];
+        }
+        List<IAccessRule> rules = new ArrayList<>();
+        for (String rule : rulesStr.split(":")) {
+            String trimmed = rule.trim();
+            if (trimmed.isEmpty()) continue;
+            if (trimmed.startsWith("+")) {
+                rules.add(JavaCore.newAccessRule(
+                    Path.fromPortableString(trimmed.substring(1) + "/**"),
+                    IAccessRule.K_ACCESSIBLE));
+            } else if (trimmed.startsWith("-")) {
+                rules.add(JavaCore.newAccessRule(
+                    Path.fromPortableString(trimmed.substring(1) + "/**"),
+                    IAccessRule.K_NON_ACCESSIBLE));
+            }
+        }
+        return rules.toArray(new IAccessRule[0]);
     }
 
     private static String extractPackageName(String targetLabel) {

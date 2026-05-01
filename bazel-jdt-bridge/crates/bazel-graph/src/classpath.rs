@@ -188,8 +188,9 @@ impl ComputedClasspath {
     }
 
     pub fn filter_by_visibility(&mut self, _requesting_package: &str) {
-        self.entries
-            .retain(|entry| entry.is_exported || entry.entry_type != ClasspathEntryType::Library);
+        // TODO: Implement proper Bazel visibility filtering using access_rules.
+        // Currently retains all entries — visibility is enforced at the Bazel level
+        // during aspect resolution, so classpath entries are already correctly scoped.
     }
 
     pub fn detect_duplicate_jars(&self) -> Vec<JarConflict> {

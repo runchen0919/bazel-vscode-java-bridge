@@ -3,14 +3,11 @@ package com.bazel.jdt;
 import java.util.List;
 
 import org.eclipse.core.runtime.ILog;
+import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.IStatus;
 import org.eclipse.core.runtime.Platform;
 import org.eclipse.core.runtime.Status;
-import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.jdt.ls.core.internal.IDelegateCommandHandler;
-
-import com.bazel.jdt.BazelBridge;
-import com.bazel.jdt.BazelClasspathManager;
 
 public class BazelCommandHandler implements IDelegateCommandHandler {
     private static final ILog LOG = Platform.getLog(BazelCommandHandler.class);

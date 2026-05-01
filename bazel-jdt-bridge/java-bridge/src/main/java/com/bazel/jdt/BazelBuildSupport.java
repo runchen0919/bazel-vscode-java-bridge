@@ -54,7 +54,11 @@ public class BazelBuildSupport implements IBuildSupport {
         if (!isBuildFile(resource)) {
             return false;
         }
-        String filePath = resource.getLocation().toOSString();
+        org.eclipse.core.runtime.IPath location = resource.getLocation();
+        if (location == null) {
+            return false;
+        }
+        String filePath = location.toOSString();
         BazelClasspathManager.refreshClasspathForFiles(Arrays.asList(filePath));
         return true;
     }

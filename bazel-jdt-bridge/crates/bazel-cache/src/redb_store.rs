@@ -161,24 +161,10 @@ impl BazelCache {
     pub fn clear(&self) -> Result<(), CacheError> {
         let txn = self.db.begin_write()?;
         {
-            let mut cp_table = txn.open_table(CLASSPATH_TABLE)?;
-            let keys: Vec<String> = cp_table
-                .iter()?
-                .filter_map(|e| e.ok())
-                .map(|(k, _)| k.value().to_string())
-                .collect();
-            for key in keys {
-                cp_table.remove(key.as_str())?;
-            }
-            let mut hash_table = txn.open_table(BUILD_HASH_TABLE)?;
-            let keys: Vec<String> = hash_table
-                .iter()?
-                .filter_map(|e| e.ok())
-                .map(|(k, _)| k.value().to_string())
-                .collect();
-            for key in keys {
-                hash_table.remove(key.as_str())?;
-            }
+            txn.delete_table(CLASSPATH_TABLE)?;
+            txn.delete_table(BUILD_HASH_TABLE)?;
+            let _ = txn.open_table(CLASSPATH_TABLE)?;
+            let _ = txn.open_table(BUILD_HASH_TABLE)?;
         }
         txn.commit()?;
         Ok(())
@@ -222,6 +208,19 @@ impl BazelCache {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(CLASSPATH_TABLE)?;
         Ok(table.len()? as usize)
+    }
+
+    pub fn list_build_hash_keys(&self) -> Result<Vec<String>, CacheError> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(BUILD_HASH_TABLE)?;
+        let mut keys = Vec::new();
+        for entry in table.iter()? {
+            match entry {
+                Ok((key, _)) => keys.push(key.value().to_string()),
+                Err(e) => log::warn!("Failed to read build hash key: {}", e),
+            }
+        }
+        Ok(keys)
     }
 
     /// Open the cache, or recreate it if the database file is corrupted.

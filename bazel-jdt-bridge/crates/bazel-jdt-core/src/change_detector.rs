@@ -324,7 +324,26 @@ pub fn scan_workspace_changes(
     let mut changed = Vec::new();
     let mut new = Vec::new();
     let mut affected = Vec::new();
-    let deleted = Vec::new();
+
+    let cached_paths: std::collections::HashSet<String> = cache
+        .list_build_hash_keys()?
+        .into_iter()
+        .collect();
+
+    let current_paths: std::collections::HashSet<String> = current_build_files
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+
+    let deleted: Vec<std::path::PathBuf> = cached_paths
+        .difference(&current_paths)
+        .map(|p| std::path::PathBuf::from(p.as_str()))
+        .collect();
+
+    for deleted_path in &deleted {
+        affected.push(compute_build_file_package_label(deleted_path, workspace_root));
+        let _ = cache.put_build_hash(&deleted_path.to_string_lossy(), "");
+    }
 
     for build_file in &current_build_files {
         let path_str = build_file.to_string_lossy();
@@ -374,11 +393,7 @@ fn collect_build_files_recursive(
         let path = entry.path();
         if path.is_dir() {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name.starts_with('.')
-                || name == "bazel-out"
-                || name == "bazel-bin"
-                || name == "bazel-testlogs"
-            {
+            if name.starts_with('.') || name.starts_with("bazel-") {
                 continue;
             }
             collect_build_files_recursive(&path, files)?;

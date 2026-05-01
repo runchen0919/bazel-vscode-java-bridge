@@ -62,7 +62,37 @@ done
 echo "=== Bazel JDT Bridge — Debug Build ==="
 echo ""
 
-# --- Step 0: Clean caches and stale artifacts ---
+# --- Step 0a: Kill stale EDH / JDT.LS processes ---
+# When debugging via F5 (Extension Development Host), redhat.java starts JDT.LS
+# with JDWP on port 1044 (see javaServerStarter.ts). If the EDH window wasn't
+# closed cleanly, the Java process lingers and port 1044 stays bound, causing
+# "transport error 202: bind failed" on the next F5 launch.
+echo "--- [0a] Checking for stale processes ---"
+
+# Kill JDT.LS Java processes holding the JDWP debug port
+if command -v lsof &>/dev/null; then
+    stale_jdtls="$(lsof -t -i :1044 2>/dev/null || true)"
+    if [[ -n "$stale_jdtls" ]]; then
+        echo "  Killing stale JDWP process on port 1044 (PID: $stale_jdtls)"
+        kill $stale_jdtls 2>/dev/null || true
+        sleep 0.5
+        stale_jdtls="$(lsof -t -i :1044 2>/dev/null || true)"
+        if [[ -n "$stale_jdtls" ]]; then
+            kill -9 $stale_jdtls 2>/dev/null || true
+        fi
+    fi
+fi
+
+# Kill orphaned Electron Extension Development Host processes
+orphan_edh="$(pgrep -f "electron.*extensionDevelopmentPath.*bazel-jdt" 2>/dev/null || true)"
+if [[ -n "$orphan_edh" ]]; then
+    echo "  Killing orphaned EDH process (PID: $(echo $orphan_edh | tr '\n' ' '))"
+    echo $orphan_edh | xargs kill 2>/dev/null || true
+fi
+
+echo ""
+
+# --- Step 0b: Clean caches and stale artifacts ---
 if [[ "$CLEAN" == true ]]; then
     echo "--- [clean] Clearing caches and stale artifacts ---"
 

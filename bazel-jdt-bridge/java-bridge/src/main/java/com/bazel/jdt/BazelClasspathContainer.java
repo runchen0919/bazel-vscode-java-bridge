@@ -45,9 +45,9 @@ public class BazelClasspathContainer implements IClasspathContainer {
                 IPath srcPath = sourcePath != null ? Path.fromPortableString(sourcePath) : null;
                 return JavaCore.newLibraryEntry(jarPath, srcPath, null);
             case "PROJ":
-                // Rust sends Bazel labels like "//app:app" as PROJ paths, but JDT expects
-                // workspace-absolute paths like "/app" (i.e. "/" + projectName).
-                // Extract package name from Bazel label — matches BazelProjectImporter.extractPackageName()
+                if (path.startsWith("@@")) {
+                    return null;
+                }
                 String projectName = extractPackageName(path);
                 return JavaCore.newProjectEntry(Path.fromPortableString("/" + projectName));
             case "SRC":

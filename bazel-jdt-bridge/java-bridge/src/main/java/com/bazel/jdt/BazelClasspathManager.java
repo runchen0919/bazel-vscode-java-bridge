@@ -42,6 +42,7 @@ public class BazelClasspathManager {
             }
             LOG.log(new Status(IStatus.INFO, "com.bazel.jdt", sb.toString()));
             BazelClasspathContainer container = new BazelClasspathContainer(rawEntries);
+            TargetProjectMapping.storeCachedClasspath(project, targetLabel, rawEntries);
             JavaCore.setClasspathContainer(
                 BazelClasspathContainer.CONTAINER_PATH,
                 new org.eclipse.jdt.core.IJavaProject[]{JavaCore.create(project)},

@@ -2,6 +2,7 @@ package com.bazel.jdt;
 
 import java.util.List;
 
+import org.eclipse.core.resources.IProject;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.ILog;
 import org.eclipse.core.runtime.IPath;
@@ -20,24 +21,9 @@ public class BazelClasspathContainerInitializer extends ClasspathContainerInitia
         if (!BazelClasspathContainer.CONTAINER_PATH.equals(containerPath)) {
             return;
         }
-        if (!BazelBridge.getInstance().isInitialized()) {
-            LOG.log(new org.eclipse.core.runtime.Status(
-                org.eclipse.core.runtime.IStatus.INFO, "com.bazel.jdt",
-                "Bridge not initialized, setting empty container for "
-                    + project.getProject().getName()
-                    + " — will refresh after initialization"));
-            try {
-                JavaCore.setClasspathContainer(
-                    BazelClasspathContainer.CONTAINER_PATH,
-                    new IJavaProject[]{project},
-                    new IClasspathContainer[]{BazelClasspathContainer.EMPTY},
-                    null
-                );
-            } catch (Exception e) {
-                LOG.log(new org.eclipse.core.runtime.Status(
-                    org.eclipse.core.runtime.IStatus.WARNING, "com.bazel.jdt",
-                    "Failed to set empty container for " + project.getProject().getName(), e));
-            }
+        BazelBridge bridge = BazelBridge.getInstance();
+        if (!bridge.isInitialized()) {
+            recoverFromCache(project);
             return;
         }
         List<String> targetLabels = TargetProjectMapping.readTargets(project.getProject());
@@ -50,6 +36,42 @@ public class BazelClasspathContainerInitializer extends ClasspathContainerInitia
             for (String label : targetLabels) {
                 BazelClasspathManager.setClasspathContainer(project.getProject(), label);
             }
+        }
+    }
+
+    private void recoverFromCache(IJavaProject project) {
+        List<String> targetLabels = TargetProjectMapping.readTargets(project.getProject());
+        if (targetLabels.isEmpty()) {
+            LOG.info("No persisted targets for " + project.getProject().getName()
+                + " — skipping container initialization until import runs");
+            return;
+        }
+        boolean anyRecovered = false;
+        for (String label : targetLabels) {
+            String[] cached = TargetProjectMapping.readCachedClasspath(project.getProject(), label);
+            if (cached != null && cached.length > 0) {
+                try {
+                    BazelClasspathContainer container = new BazelClasspathContainer(cached);
+                    JavaCore.setClasspathContainer(
+                        BazelClasspathContainer.CONTAINER_PATH,
+                        new IJavaProject[]{project},
+                        new IClasspathContainer[]{container},
+                        null
+                    );
+                    anyRecovered = true;
+                    LOG.info("Recovered classpath from cache for " + project.getProject().getName()
+                        + " / " + label + " (" + cached.length + " entries)");
+                } catch (Exception e) {
+                    LOG.warn("Failed to apply cached classpath for " + label + ": " + e.getMessage());
+                }
+            } else {
+                LOG.info("No cached classpath for " + project.getProject().getName()
+                    + " / " + label + " — will resolve after import");
+            }
+        }
+        if (!anyRecovered) {
+            LOG.info("No cached classpath for " + project.getProject().getName()
+                + " — skipping until import provides entries");
         }
     }
 

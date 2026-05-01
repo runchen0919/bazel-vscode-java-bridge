@@ -28,6 +28,10 @@ public final class TargetProjectMapping {
 
     static final String QUALIFIER = "com.bazel.jdt";
     static final String KEY = "targetLabels";
+    static final String KEY_WORKSPACE_PATH = "workspacePath";
+    static final String KEY_BAZEL_PATH = "bazelPath";
+    static final String KEY_CACHE_DIR = "cacheDir";
+    static final String KEY_CACHED_CLASSPATH = "cachedClasspath";
 
     private TargetProjectMapping() {}
 
@@ -100,6 +104,53 @@ public final class TargetProjectMapping {
             project.setPersistentProperty(propertyName(), null);
         } catch (CoreException e) {
             LOG.error("Failed to clear target labels for project '" + project.getName() + "'", e);
+        }
+    }
+
+    public static void storeWorkspaceConfig(IProject project, String workspacePath,
+            String bazelPath, String cacheDir) {
+        try {
+            project.setPersistentProperty(new QualifiedName(QUALIFIER, KEY_WORKSPACE_PATH), workspacePath);
+            project.setPersistentProperty(new QualifiedName(QUALIFIER, KEY_BAZEL_PATH), bazelPath);
+            project.setPersistentProperty(new QualifiedName(QUALIFIER, KEY_CACHE_DIR), cacheDir);
+            LOG.info("Stored workspace config for project '" + project.getName() + "'");
+        } catch (CoreException e) {
+            LOG.error("Failed to store workspace config for '" + project.getName() + "'", e);
+        }
+    }
+
+    public static String[] readWorkspaceConfig(IProject project) {
+        try {
+            String ws = project.getPersistentProperty(new QualifiedName(QUALIFIER, KEY_WORKSPACE_PATH));
+            String bp = project.getPersistentProperty(new QualifiedName(QUALIFIER, KEY_BAZEL_PATH));
+            String cd = project.getPersistentProperty(new QualifiedName(QUALIFIER, KEY_CACHE_DIR));
+            if (ws == null) return null;
+            return new String[]{ws, bp != null ? bp : "bazel", cd != null ? cd : BazelCommandHandler.DEFAULT_CACHE_DIR};
+        } catch (CoreException e) {
+            LOG.error("Failed to read workspace config for '" + project.getName() + "'", e);
+            return null;
+        }
+    }
+
+    public static void storeCachedClasspath(IProject project, String targetLabel, String[] rawEntries) {
+        try {
+            String key = KEY_CACHED_CLASSPATH + "." + targetLabel;
+            String value = rawEntries == null ? "" : String.join("\n", rawEntries);
+            project.setPersistentProperty(new QualifiedName(QUALIFIER, key), value);
+        } catch (CoreException e) {
+            LOG.error("Failed to cache classpath for '" + targetLabel + "'", e);
+        }
+    }
+
+    public static String[] readCachedClasspath(IProject project, String targetLabel) {
+        try {
+            String key = KEY_CACHED_CLASSPATH + "." + targetLabel;
+            String value = project.getPersistentProperty(new QualifiedName(QUALIFIER, key));
+            if (value == null || value.isEmpty()) return null;
+            return value.split("\n");
+        } catch (CoreException e) {
+            LOG.error("Failed to read cached classpath for '" + targetLabel + "'", e);
+            return null;
         }
     }
 }

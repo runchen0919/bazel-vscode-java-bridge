@@ -92,3 +92,71 @@ impl ArtifactLocation {
 pub struct JavacOptions {
     pub options: Vec<String>,
 }
+
+/// Derive the apparent repo label from a bzlmod canonical label.
+/// Canonical form: `@@<module>~<ext>~<repo_name>//<rest>`
+/// Apparent form: `@<repo_name>//<rest>`
+/// Returns `None` for labels that don't match the canonical bzlmod pattern.
+pub fn canonical_to_apparent_label(label: &str) -> Option<String> {
+    if !label.starts_with("@@") {
+        return None;
+    }
+    let rest = &label[2..];
+    let slash_pos = rest.find("//")?;
+    let repo_part = &rest[..slash_pos];
+    if !repo_part.contains('~') {
+        return None;
+    }
+    let after_slash = &rest[slash_pos..];
+    let apparent_repo = repo_part.rsplit('~').next()?;
+    Some(format!("@{}{}", apparent_repo, after_slash))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canonical_to_apparent_label;
+
+    #[test]
+    fn test_canonical_maven_label_to_apparent() {
+        assert_eq!(
+            canonical_to_apparent_label(
+                "@@rules_jvm_external~maven~maven//:com_google_guava_guava"
+            ),
+            Some("@maven//:com_google_guava_guava".to_string())
+        );
+    }
+
+    #[test]
+    fn test_canonical_multi_segment_repo() {
+        assert_eq!(
+            canonical_to_apparent_label("@@some_module~ext~my_repo~nested//pkg:target"),
+            Some("@nested//pkg:target".to_string())
+        );
+    }
+
+    #[test]
+    fn test_single_at_label_returns_none() {
+        assert_eq!(
+            canonical_to_apparent_label("@maven//:com_google_guava_guava"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_workspace_internal_returns_none() {
+        assert_eq!(canonical_to_apparent_label("//utils:string_utils"), None);
+    }
+
+    #[test]
+    fn test_bazel_tools_returns_none() {
+        assert_eq!(
+            canonical_to_apparent_label("@@bazel_tools//tools/jdk:toolchain"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_platforms_returns_none() {
+        assert_eq!(canonical_to_apparent_label("@@platforms//cpu:cpu"), None);
+    }
+}

@@ -10,6 +10,9 @@ pub struct DependencyGraph {
     /// Targets that have `testonly = True` in their Bazel rule definition.
     /// These targets can only be depended on by test targets.
     testonly_targets: HashSet<String>,
+    /// Maps apparent external repo labels to canonical bzlmod labels.
+    /// e.g. `@maven//:guava` → `@@rules_jvm_external~maven~maven//:guava`
+    pub(crate) label_aliases: HashMap<String, String>,
 }
 
 /// Error for graph operations
@@ -29,12 +32,18 @@ impl DependencyGraph {
             label_to_index: HashMap::new(),
             target_jars: HashMap::new(),
             testonly_targets: HashSet::new(),
+            label_aliases: HashMap::new(),
         }
     }
 
     /// Add a target node to the graph
     pub fn add_target(&mut self, label: &str) {
         if !self.label_to_index.contains_key(label) {
+            if let Some(canonical) = self.label_aliases.get(label) {
+                if self.label_to_index.contains_key(canonical) {
+                    return;
+                }
+            }
             let idx = self.graph.add_node(label.to_string());
             self.label_to_index.insert(label.to_string(), idx);
         }
@@ -109,11 +118,22 @@ impl DependencyGraph {
     /// Check if a target exists in the graph
     pub fn has_target(&self, label: &str) -> bool {
         self.label_to_index.contains_key(label)
+            || self
+                .label_aliases
+                .get(label)
+                .map(|c| self.label_to_index.contains_key(c))
+                .unwrap_or(false)
     }
 
-    /// Get JARs for a target
+    /// Get JARs for a target, resolving through the alias map if needed
     pub fn get_target_jars(&self, label: &str) -> Option<&Vec<String>> {
-        self.target_jars.get(label)
+        if let Some(jars) = self.target_jars.get(label) {
+            return Some(jars);
+        }
+        if let Some(canonical) = self.label_aliases.get(label) {
+            return self.target_jars.get(canonical);
+        }
+        None
     }
 
     /// Check if a target has `testonly = True`.
@@ -132,6 +152,7 @@ impl DependencyGraph {
         self.label_to_index.clear();
         self.target_jars.clear();
         self.testonly_targets.clear();
+        self.label_aliases.clear();
     }
 
     /// Populate graph from Bazel aspect output (primary data source).
@@ -141,16 +162,33 @@ impl DependencyGraph {
             let label = &info.label;
             self.add_target(label);
 
+            if let Some(apparent) = bazel_aspect::canonical_to_apparent_label(label) {
+                self.label_aliases
+                    .entry(apparent)
+                    .or_insert_with(|| label.clone());
+            }
+
             if info.kind == "java_test" {
                 self.testonly_targets.insert(label.clone());
             }
 
             if let Some(ref java_info) = info.java_info {
-                let jars: Vec<String> = java_info
+                let mut jars: Vec<String> = java_info
                     .jars
                     .iter()
                     .filter_map(|j| j.jar.best_path())
                     .collect();
+
+                // Fallback: java_import targets (e.g. Maven deps from rules_jvm_external)
+                // may have empty `jars` but populated `compile_jars`.
+                if jars.is_empty() {
+                    jars = java_info
+                        .compile_jars
+                        .iter()
+                        .filter_map(|j| j.best_path())
+                        .collect();
+                }
+
                 if !jars.is_empty() {
                     self.set_target_jars(label, jars);
                 }
@@ -277,6 +315,34 @@ mod tests {
                     ..Default::default()
                 })
             },
+            deps: deps.iter().map(|s| s.to_string()).collect(),
+            runtime_deps: Vec::new(),
+            exports: Vec::new(),
+        }
+    }
+
+    fn make_target_with_compile_jars(
+        label: &str,
+        deps: Vec<&str>,
+        compile_jar_paths: Vec<&str>,
+    ) -> TargetIdeInfo {
+        let compile_jars: Vec<ArtifactLocation> = compile_jar_paths
+            .iter()
+            .map(|p| ArtifactLocation {
+                absolute_path: Some(p.to_string()),
+                ..Default::default()
+            })
+            .collect();
+
+        TargetIdeInfo {
+            label: label.to_string(),
+            kind: "java_import".to_string(),
+            build_file: None,
+            java_info: Some(JavaIdeInfo {
+                jars: vec![],
+                compile_jars,
+                ..Default::default()
+            }),
             deps: deps.iter().map(|s| s.to_string()).collect(),
             runtime_deps: Vec::new(),
             exports: Vec::new(),
@@ -505,5 +571,61 @@ mod tests {
         assert!(graph.is_testonly("//foo:test"));
         graph.clear();
         assert!(!graph.is_testonly("//foo:test"));
+    }
+
+    #[test]
+    fn test_populate_from_aspects_compile_jars_fallback() {
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target("//app:app", vec!["@maven//:guava"], vec!["/app.jar"]),
+            make_target_with_compile_jars("@maven//:guava", vec![], vec!["/guava.jar"]),
+        ];
+        graph.populate_from_aspects(&results);
+
+        let jars = graph.get_target_jars("@maven//:guava");
+        assert!(
+            jars.is_some(),
+            "Expected JAR data for @maven//:guava from compile_jars fallback"
+        );
+        let jar_list = jars.unwrap();
+        assert_eq!(jar_list.len(), 1);
+        assert_eq!(jar_list[0], "/guava.jar");
+    }
+
+    #[test]
+    fn test_populate_from_aspects_jars_preferred_over_compile_jars() {
+        let mut graph = DependencyGraph::new();
+
+        let target = TargetIdeInfo {
+            label: "//lib:mylib".to_string(),
+            kind: "java_library".to_string(),
+            build_file: None,
+            java_info: Some(JavaIdeInfo {
+                jars: vec![JarInfo {
+                    jar: ArtifactLocation {
+                        absolute_path: Some("/output.jar".to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }],
+                compile_jars: vec![ArtifactLocation {
+                    absolute_path: Some("/compile.jar".to_string()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            deps: vec![],
+            runtime_deps: Vec::new(),
+            exports: Vec::new(),
+        };
+
+        graph.populate_from_aspects(&[target]);
+
+        let jars = graph.get_target_jars("//lib:mylib").unwrap();
+        assert_eq!(jars.len(), 1);
+        assert_eq!(
+            jars[0], "/output.jar",
+            "Expected `jars` field to take precedence over `compile_jars`"
+        );
     }
 }

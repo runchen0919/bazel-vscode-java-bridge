@@ -99,7 +99,9 @@ impl ComputedClasspath {
         for dep_label in &deps {
             let dep_is_testonly = is_test_context && graph.is_testonly(dep_label);
 
-            if dep_label.starts_with("@@") {
+            // Bazel 6+ uses "@@" canonical labels for external repos. Only skip
+            // toolchain/platform targets — Maven deps etc. must pass through.
+            if is_bazel_internal_label(dep_label) {
                 continue;
             }
 
@@ -246,6 +248,16 @@ impl ComputedClasspath {
             })
             .collect()
     }
+}
+
+/// Returns true for Bazel-internal toolchain/platform targets that should never
+/// appear on a Java classpath. In Bazel 6+, canonical repo labels use "@@" prefix.
+/// External dependencies like Maven artifacts (e.g. `@@maven+...//:guava`) must NOT
+/// be filtered — only Bazel's own infrastructure targets.
+fn is_bazel_internal_label(label: &str) -> bool {
+    label.starts_with("@@bazel_tools//")
+        || label.starts_with("@@local_config_")
+        || label.starts_with("@@platforms//")
 }
 
 #[cfg(test)]
@@ -540,24 +552,152 @@ mod tests {
     fn test_at_at_prefixed_dep_produces_no_entries() {
         let mut graph = DependencyGraph::new();
         let results = vec![
-            make_target("//app:app", vec!["@@toolchain//:jdk"], vec!["/app.jar"]),
-            make_target("@@toolchain//:jdk", vec![], vec![]),
+            make_target(
+                "//app:app",
+                vec!["@@bazel_tools//tools/jdk:toolchain", "@@platforms//cpu:cpu"],
+                vec!["/app.jar"],
+            ),
+            make_target("@@bazel_tools//tools/jdk:toolchain", vec![], vec![]),
+            make_target("@@platforms//cpu:cpu", vec![], vec![]),
         ];
         graph.populate_from_aspects(&results);
 
         let cp =
             ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary).unwrap();
 
-        let at_at_entries: Vec<&ClasspathEntry> = cp
+        let internal_entries: Vec<&ClasspathEntry> = cp
             .entries
             .iter()
-            .filter(|e| e.path.contains("toolchain"))
+            .filter(|e| e.path.contains("bazel_tools") || e.path.contains("platforms"))
             .collect();
 
         assert!(
-            at_at_entries.is_empty(),
-            "Expected no entries for @@-prefixed dependency, got: {:?}",
-            at_at_entries
+            internal_entries.is_empty(),
+            "Expected no entries for Bazel-internal @@ targets, got: {:?}",
+            internal_entries
+        );
+    }
+
+    #[test]
+    fn test_canonical_external_dep_produces_lib_entry() {
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target(
+                "//app:app",
+                vec!["@@maven//:com_google_guava_guava"],
+                vec!["/app.jar"],
+            ),
+            make_target(
+                "@@maven//:com_google_guava_guava",
+                vec![],
+                vec!["/guava-33.4.0-jre.jar"],
+            ),
+        ];
+        graph.populate_from_aspects(&results);
+
+        let cp =
+            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary).unwrap();
+
+        let proj_count = cp
+            .entries
+            .iter()
+            .filter(|e| e.entry_type == ClasspathEntryType::Project)
+            .count();
+        let guava_lib = cp.entries.iter().find(|e| {
+            e.entry_type == ClasspathEntryType::Library && e.path == "/guava-33.4.0-jre.jar"
+        });
+
+        assert_eq!(
+            proj_count, 0,
+            "Expected no PROJ entries for external @@maven dep"
+        );
+        assert!(
+            guava_lib.is_some(),
+            "Expected LIB entry for guava JAR, got entries: {:?}",
+            cp.entries
+        );
+    }
+
+    #[test]
+    fn test_canonical_mixed_deps_ordering() {
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target(
+                "//app:app",
+                vec!["//utils:string_utils", "@@maven//:guava", "//service:api"],
+                vec!["/app.jar"],
+            ),
+            make_target("//utils:string_utils", vec![], vec!["/utils.jar"]),
+            make_target("@@maven//:guava", vec![], vec!["/guava.jar"]),
+            make_target("//service:api", vec![], vec![]),
+        ];
+        graph.populate_from_aspects(&results);
+
+        let cp =
+            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary).unwrap();
+
+        let utils_proj_idx = cp.entries.iter().position(|e| {
+            e.entry_type == ClasspathEntryType::Project && e.path == "//utils:string_utils"
+        });
+        let utils_lib_idx = cp
+            .entries
+            .iter()
+            .position(|e| e.entry_type == ClasspathEntryType::Library && e.path == "/utils.jar");
+        let guava_lib_idx = cp
+            .entries
+            .iter()
+            .position(|e| e.entry_type == ClasspathEntryType::Library && e.path == "/guava.jar");
+        let api_proj_idx = cp
+            .entries
+            .iter()
+            .position(|e| e.entry_type == ClasspathEntryType::Project && e.path == "//service:api");
+        let guava_proj_idx = cp.entries.iter().position(|e| {
+            e.entry_type == ClasspathEntryType::Project && e.path == "@@maven//:guava"
+        });
+
+        assert!(
+            utils_proj_idx.is_some(),
+            "Expected PROJ for //utils:string_utils"
+        );
+        assert!(utils_lib_idx.is_some(), "Expected LIB for /utils.jar");
+        assert!(
+            guava_lib_idx.is_some(),
+            "Expected LIB for /guava.jar from @@maven dep"
+        );
+        assert!(api_proj_idx.is_some(), "Expected PROJ for //service:api");
+        assert!(
+            guava_proj_idx.is_none(),
+            "Expected no PROJ for external @@maven//:guava"
+        );
+
+        assert!(
+            utils_proj_idx.unwrap() < utils_lib_idx.unwrap(),
+            "PROJ for utils should precede its LIB"
+        );
+    }
+
+    #[test]
+    fn test_canonical_external_dep_no_jars_produces_nothing() {
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target("//app:app", vec!["@@maven//:some_target"], vec!["/app.jar"]),
+            make_target("@@maven//:some_target", vec![], vec![]),
+        ];
+        graph.populate_from_aspects(&results);
+
+        let cp =
+            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary).unwrap();
+
+        let maven_entries: Vec<&ClasspathEntry> = cp
+            .entries
+            .iter()
+            .filter(|e| e.path.contains("maven"))
+            .collect();
+
+        assert!(
+            maven_entries.is_empty(),
+            "Expected no entries for @@maven target with no JAR data, got: {:?}",
+            maven_entries
         );
     }
 
@@ -612,5 +752,140 @@ mod tests {
             utils_proj_idx.unwrap() < utils_lib_idx.unwrap(),
             "PROJ for utils should precede its LIB"
         );
+    }
+
+    #[test]
+    fn test_rules_jvm_external_not_filtered() {
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target(
+                "//app:app",
+                vec!["@@rules_jvm_external~maven~maven//:com_google_guava_guava"],
+                vec!["/app.jar"],
+            ),
+            make_target_with_jar_path(
+                "@@rules_jvm_external~maven~maven//:com_google_guava_guava",
+                vec![],
+                "/guava.jar",
+            ),
+        ];
+        graph.populate_from_aspects(&results);
+
+        let cp =
+            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary).unwrap();
+
+        let guava_entries: Vec<&ClasspathEntry> = cp
+            .entries
+            .iter()
+            .filter(|e| e.path.contains("guava"))
+            .collect();
+        assert!(
+            !guava_entries.is_empty(),
+            "Expected LIB entry for @@rules_jvm_external maven dep, got: {:?}",
+            cp.entries
+        );
+    }
+
+    #[test]
+    fn test_label_alias_registered_on_canonical_target() {
+        let mut graph = DependencyGraph::new();
+        let results = vec![make_target_with_jar_path(
+            "@@rules_jvm_external~maven~maven//:com_google_guava_guava",
+            vec![],
+            "/guava.jar",
+        )];
+        graph.populate_from_aspects(&results);
+
+        let jars = graph.get_target_jars("@maven//:com_google_guava_guava");
+        assert!(
+            jars.is_some(),
+            "Expected JAR data for @maven//:guava via alias"
+        );
+        assert_eq!(jars.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_get_target_jars_resolves_alias() {
+        let mut graph = DependencyGraph::new();
+        graph.add_target("@@rules_jvm_external~maven~maven//:guava");
+        graph.set_target_jars(
+            "@@rules_jvm_external~maven~maven//:guava",
+            vec!["/guava.jar".to_string()],
+        );
+        graph.label_aliases.insert(
+            "@maven//:guava".to_string(),
+            "@@rules_jvm_external~maven~maven//:guava".to_string(),
+        );
+
+        let jars = graph.get_target_jars("@maven//:guava");
+        assert!(jars.is_some());
+        assert_eq!(jars.unwrap()[0], "/guava.jar");
+    }
+
+    #[test]
+    fn test_transitive_deps_via_alias() {
+        let mut graph = DependencyGraph::new();
+
+        graph.add_target("//utils:string_utils");
+        graph.add_target("@maven//:com_google_guava_guava");
+        graph.add_dep("//utils:string_utils", "@maven//:com_google_guava_guava");
+
+        graph.add_target("@@rules_jvm_external~maven~maven//:com_google_guava_guava");
+        graph.set_target_jars(
+            "@@rules_jvm_external~maven~maven//:com_google_guava_guava",
+            vec!["/guava-33.4.0-jre.jar".to_string()],
+        );
+        graph.label_aliases.insert(
+            "@maven//:com_google_guava_guava".to_string(),
+            "@@rules_jvm_external~maven~maven//:com_google_guava_guava".to_string(),
+        );
+
+        let cp =
+            ComputedClasspath::compute_for(&graph, "//utils:string_utils", TargetKind::JavaLibrary)
+                .unwrap();
+
+        let guava_lib = cp
+            .entries
+            .iter()
+            .find(|e| e.entry_type == ClasspathEntryType::Library && e.path.contains("guava"));
+        assert!(
+            guava_lib.is_some(),
+            "Expected Guava LIB entry via alias resolution, got: {:?}",
+            cp.entries
+        );
+    }
+
+    #[test]
+    fn test_clear_resets_label_aliases() {
+        let mut graph = DependencyGraph::new();
+        graph.label_aliases.insert(
+            "@maven//:guava".to_string(),
+            "@@rules_jvm_external~maven~maven//:guava".to_string(),
+        );
+        assert!(!graph.label_aliases.is_empty());
+
+        graph.clear();
+        assert!(graph.label_aliases.is_empty());
+    }
+
+    fn make_target_with_jar_path(label: &str, deps: Vec<&str>, jar_path: &str) -> TargetIdeInfo {
+        TargetIdeInfo {
+            label: label.to_string(),
+            kind: "java_import".to_string(),
+            build_file: None,
+            java_info: Some(JavaIdeInfo {
+                jars: vec![JarInfo {
+                    jar: ArtifactLocation {
+                        absolute_path: Some(jar_path.to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            deps: deps.iter().map(|s| s.to_string()).collect(),
+            runtime_deps: Vec::new(),
+            exports: Vec::new(),
+        }
     }
 }

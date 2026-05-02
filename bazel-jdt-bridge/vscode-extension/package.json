@@ -49,6 +49,14 @@
                     "type": "string",
                     "default": "",
                     "description": "Cache directory"
+                },
+                "bazel-jdt.importScanDirs": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "default": [],
+                    "description": "Directories (relative to workspace root) to scan one level deeper for BUILD files during import wizard directory selection. Default: only first-level directories with BUILD files are shown."
                 }
             }
         },

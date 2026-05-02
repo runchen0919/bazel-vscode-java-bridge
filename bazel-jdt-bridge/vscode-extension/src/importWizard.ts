@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { parseBazelprojectFile, resolveScopePatterns } from './bazelproject';
+import { getConfig } from './config';
 
 export interface ImportWizardResult {
     strategy: 'existing' | 'manual' | 'everything';
@@ -81,18 +82,19 @@ export async function runImportWizard(
 async function runDirectoryPicker(
     workspaceRoot: string
 ): Promise<ImportWizardResult | undefined> {
-    const dirs = collectDirectories(workspaceRoot);
+    const config = getConfig();
+    const dirs = collectDirectories(workspaceRoot, config.importScanDirs);
 
     if (dirs.length === 0) {
-        vscode.window.showWarningMessage('No directories found in workspace.');
+        vscode.window.showWarningMessage('No directories with BUILD files found in workspace.');
         return undefined;
     }
 
     const picks = await vscode.window.showQuickPick(
         dirs.map((d) => ({
-            label: d.relative,
-            description: d.hasBuildFile ? '$(gear) has BUILD' : undefined,
-            detail: d.absolute,
+            label: d.name,
+            description: d.parentPath,
+            detail: d.relative,
         })),
         {
             placeHolder: 'Select directories to import (multi-select)',
@@ -104,7 +106,7 @@ async function runDirectoryPicker(
         return undefined;
     }
 
-    const patterns = picks.map((p) => `//${p.label}/...:*`);
+    const patterns = picks.map((p) => `//${p.detail}/...:*`);
 
     const saveChoice = await vscode.window.showQuickPick(
         [
@@ -117,12 +119,12 @@ async function runDirectoryPicker(
     if (saveChoice && saveChoice.label.startsWith('Yes')) {
         const bazelprojectPath = path.join(workspaceRoot, '.bazelproject');
         const content = generateBazelprojectContent(
-            picks.map((p) => p.label)
+            picks.map((p) => p.detail)
         );
         vscode.commands.executeCommand('_bazel-jdt.setWizardActive', true);
         fs.writeFileSync(bazelprojectPath, content, 'utf-8');
         setTimeout(() => {
-            vscode.commands.executeCommand('_bazel-jdt.setWizardActive', false).catch(() => {});
+            vscode.commands.executeCommand('_bazel-jdt.setWizardActive', false).then(undefined, () => {});
         }, 2000);
         return { strategy: 'manual', patterns, bazelprojectPath };
     }
@@ -131,40 +133,66 @@ async function runDirectoryPicker(
 }
 
 interface DirectoryEntry {
+    name: string;
+    parentPath: string;
     relative: string;
-    absolute: string;
-    hasBuildFile: boolean;
 }
 
-function collectDirectories(workspaceRoot: string): DirectoryEntry[] {
-    const results: DirectoryEntry[] = [];
-    const maxDepth = 3;
+function hasBuildFile(dirPath: string): boolean {
+    return fs.existsSync(path.join(dirPath, 'BUILD')) ||
+           fs.existsSync(path.join(dirPath, 'BUILD.bazel'));
+}
 
-    function walk(dir: string, depth: number) {
-        if (depth > maxDepth) {
+const SKIP_DIRS = new Set(['.', 'bazel-out', 'bazel-bin', 'bazel-testlogs', 'bazel-genfiles']);
+
+function collectDirectories(workspaceRoot: string, scanDirs: string[]): DirectoryEntry[] {
+    const results: DirectoryEntry[] = [];
+    const seen = new Set<string>();
+
+    function addEntry(relativePath: string) {
+        if (seen.has(relativePath)) {
             return;
         }
+        seen.add(relativePath);
+        const parts = relativePath.split('/');
+        const name = parts[parts.length - 1];
+        const parentParts = parts.slice(0, -1);
+        const parentPath = parentParts.length > 0 ? parentParts.join('/') + '/' : '';
+        results.push({ name, parentPath, relative: relativePath });
+    }
+
+    try {
+        const entries = fs.readdirSync(workspaceRoot, { withFileTypes: true });
+        for (const entry of entries) {
+            if (!entry.isDirectory() || entry.name.startsWith('.') || SKIP_DIRS.has(entry.name)) {
+                continue;
+            }
+            const fullPath = path.join(workspaceRoot, entry.name);
+            if (hasBuildFile(fullPath)) {
+                addEntry(entry.name);
+            }
+        }
+    } catch {
+    }
+
+    for (const scanDir of scanDirs) {
+        const scanPath = path.join(workspaceRoot, scanDir);
         try {
-            const entries = fs.readdirSync(dir, { withFileTypes: true });
+            const entries = fs.readdirSync(scanPath, { withFileTypes: true });
             for (const entry of entries) {
-                if (entry.name.startsWith('.') || entry.name === 'bazel-out' || entry.name === 'bazel-bin') {
+                if (!entry.isDirectory() || entry.name.startsWith('.') || SKIP_DIRS.has(entry.name)) {
                     continue;
                 }
-                if (entry.isDirectory()) {
-                    const fullPath = path.join(dir, entry.name);
-                    const relative = path.relative(workspaceRoot, fullPath);
-                    const hasBuild =
-                        fs.existsSync(path.join(fullPath, 'BUILD')) ||
-                        fs.existsSync(path.join(fullPath, 'BUILD.bazel'));
-                    results.push({ relative, absolute: fullPath, hasBuildFile: hasBuild });
-                    walk(fullPath, depth + 1);
+                const childPath = path.join(scanPath, entry.name);
+                if (hasBuildFile(childPath)) {
+                    const relative = scanDir + '/' + entry.name;
+                    addEntry(relative);
                 }
             }
         } catch {
         }
     }
 
-    walk(workspaceRoot, 0);
     results.sort((a, b) => a.relative.localeCompare(b.relative));
     return results;
 }

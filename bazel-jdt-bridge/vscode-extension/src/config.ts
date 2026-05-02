@@ -4,6 +4,7 @@ export interface BazelConfig {
     bazelPath: string;
     syncOnSave: boolean;
     cacheDir: string;
+    importScanDirs: string[];
 }
 
 export function getConfig(): BazelConfig {
@@ -12,5 +13,6 @@ export function getConfig(): BazelConfig {
         bazelPath: config.get<string>('bazelPath', 'bazel'),
         syncOnSave: config.get<boolean>('syncOnSave', true),
         cacheDir: config.get<string>('cacheDir', ''),
+        importScanDirs: config.get<string[]>('importScanDirs', []),
     };
 }

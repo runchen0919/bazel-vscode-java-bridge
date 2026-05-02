@@ -1,5 +1,4 @@
 import * as fs from 'fs';
-import * as path from 'path';
 
 export interface BazelProjectViewConfig {
     directories: string[];
@@ -29,7 +28,7 @@ export function parseBazelprojectFile(filePath: string): BazelProjectViewConfig 
 }
 
 export function parseBazelprojectContent(content: string): BazelProjectViewConfig {
-    const config = { ...DEFAULT_CONFIG, directories: [], targets: [], buildFlags: [], testSources: [], imports: [] };
+    const config: BazelProjectViewConfig = { ...DEFAULT_CONFIG, directories: [], targets: [], buildFlags: [], testSources: [], imports: [] };
     let currentSection: string | null = null;
 
     for (const rawLine of content.split('\n')) {
@@ -41,6 +40,17 @@ export function parseBazelprojectContent(content: string): BazelProjectViewConfi
         if (line.endsWith(':')) {
             currentSection = line.slice(0, -1).trim().toLowerCase();
             continue;
+        }
+
+        const directiveMatch = line.match(/^([a-z_]+):\s*(.+)$/i);
+        if (directiveMatch) {
+            const key = directiveMatch[1].toLowerCase();
+            const value = directiveMatch[2].trim();
+            if (key === 'derive_targets_from_directories') {
+                config.deriveTargetsFromDirectories = value.toLowerCase() === 'true';
+                currentSection = null;
+                continue;
+            }
         }
 
         if (currentSection === null) {

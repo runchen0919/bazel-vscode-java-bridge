@@ -63,6 +63,7 @@ public class BazelCommandHandler implements IDelegateCommandHandler {
     private Object handleCleanCache() {
         try {
             BazelBridge.getInstance().cleanCache();
+            TargetProjectMapping.clearClasspathCache();
             return null;
         } catch (Exception e) {
             LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt", "Bazel cache clean failed", e));

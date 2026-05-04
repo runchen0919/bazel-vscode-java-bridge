@@ -19,16 +19,20 @@ export function registerCommands(context: vscode.ExtensionContext) {
                         const wizardResult = await runImportWizard(workspaceRoot);
                         const scopePatterns = wizardResult?.patterns || [];
                         let buildFlags: string[] = [];
+                        let bazelPath = config.bazelPath;
                         if (wizardResult?.bazelprojectPath) {
                             const viewConfig = parseBazelprojectFile(wizardResult.bazelprojectPath);
                             if (viewConfig) {
                                 buildFlags = viewConfig.buildFlags;
+                                if (viewConfig.bazelBinary) {
+                                    bazelPath = viewConfig.bazelBinary;
+                                }
                             }
                         }
 
                         progress.report({ message: 'Discovering Java targets...' });
                         await vscode.commands.executeCommand('java.execute.workspaceCommand',
-                            'bazel-jdt.importProject', workspaceRoot, config.bazelPath, config.cacheDir,
+                            'bazel-jdt.importProject', workspaceRoot, bazelPath, config.cacheDir,
                             scopePatterns, buildFlags);
                     }
                 );

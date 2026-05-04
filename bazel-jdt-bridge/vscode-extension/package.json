@@ -70,6 +70,35 @@
                     "type": "string",
                     "default": "17",
                     "description": "Java language level for the project (e.g., 8, 11, 17, 21)"
+                },
+                "bazel-jdt.syncFlags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "default": [],
+                    "description": "Sync flags to include in generated .bazelproject (reserved for future use)"
+                },
+                "bazel-jdt.excludeTargets": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "default": [],
+                    "description": "Bazel targets to exclude from import (e.g., //third_party:expensive_test)"
+                },
+                "bazel-jdt.testSources": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "default": [],
+                    "description": "Additional test source glob patterns beyond auto-detected ones (e.g., javatests/**)"
+                },
+                "bazel-jdt.deriveTargets": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Whether to derive targets from selected directories in the import wizard"
                 }
             }
         },

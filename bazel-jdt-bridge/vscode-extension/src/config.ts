@@ -7,6 +7,10 @@ export interface BazelConfig {
     importScanDirs: string[];
     buildFlags: string[];
     javaLanguageLevel: string;
+    syncFlags: string[];
+    excludeTargets: string[];
+    testSources: string[];
+    deriveTargets: boolean;
 }
 
 export function getConfig(): BazelConfig {
@@ -18,5 +22,9 @@ export function getConfig(): BazelConfig {
         importScanDirs: config.get<string[]>('importScanDirs', []),
         buildFlags: config.get<string[]>('buildFlags', []),
         javaLanguageLevel: config.get<string>('javaLanguageLevel', '17'),
+        syncFlags: config.get<string[]>('syncFlags', []),
+        excludeTargets: config.get<string[]>('excludeTargets', []),
+        testSources: config.get<string[]>('testSources', []),
+        deriveTargets: config.get<boolean>('deriveTargets', true),
     };
 }

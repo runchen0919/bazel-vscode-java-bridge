@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { registerCommands } from './commands';
+import * as fs from 'fs';
+import { registerImportCommand, registerRuntimeCommands } from './commands';
 import { createStatusBar } from './statusBar';
 import { getConfig } from './config';
 import { parseBazelprojectFile, resolveScopePatterns } from './bazelproject';
@@ -17,8 +18,21 @@ export async function activate(context: vscode.ExtensionContext) {
         return;
     }
 
+    const bazelprojectPath = path.join(workspaceRoot, '.bazelproject');
+    const hasBazelproject = fs.existsSync(bazelprojectPath);
+
+    if (hasBazelproject) {
+        activateFull(context, workspaceRoot);
+    } else {
+        registerImportCommand(context);
+        setupCreationOnlyWatcher(context, workspaceRoot);
+    }
+}
+
+function activateFull(context: vscode.ExtensionContext, workspaceRoot: string) {
     const statusBarItem = createStatusBar(context);
-    registerCommands(context);
+    registerImportCommand(context);
+    registerRuntimeCommands(context);
 
     const bazelprojectPattern = new vscode.RelativePattern(workspaceRoot, '.bazelproject');
     const watcher = vscode.workspace.createFileSystemWatcher(bazelprojectPattern);
@@ -63,10 +77,32 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         watcher.onDidChange(triggerReimport),
         watcher.onDidCreate(triggerReimport),
-        watcher.onDidDelete(triggerReimport),
         watcher,
         statusBarItem,
     );
+}
+
+function setupCreationOnlyWatcher(context: vscode.ExtensionContext, workspaceRoot: string) {
+    const pattern = new vscode.RelativePattern(workspaceRoot, '.bazelproject');
+    const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+
+    context.subscriptions.push(
+        watcher.onDidCreate(async () => {
+            watcher.dispose();
+
+            const choice = await vscode.window.showInformationMessage(
+                'Bazel project config detected. Reload window to activate.',
+                'Reload',
+                'Dismiss'
+            );
+
+            if (choice === 'Reload') {
+                vscode.commands.executeCommand('workbench.action.reloadWindow');
+            }
+        })
+    );
+
+    context.subscriptions.push(watcher);
 }
 
 export async function deactivate() {

@@ -4,7 +4,7 @@ import { getConfig } from './config';
 import { runImportWizard } from './importWizard';
 import { parseBazelprojectFile } from './bazelproject';
 
-export function registerCommands(context: vscode.ExtensionContext) {
+export function registerImportCommand(context: vscode.ExtensionContext) {
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
 
     context.subscriptions.push(
@@ -42,7 +42,9 @@ export function registerCommands(context: vscode.ExtensionContext) {
             }
         })
     );
+}
 
+export function registerRuntimeCommands(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.commands.registerCommand('bazel-jdt.syncProject', async () => {
             try {

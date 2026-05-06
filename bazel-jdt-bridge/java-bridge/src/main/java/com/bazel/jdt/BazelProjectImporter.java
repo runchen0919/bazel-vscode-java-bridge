@@ -33,8 +33,10 @@ public class BazelProjectImporter extends AbstractProjectImporter {
     @Override
     public boolean applies(IProgressMonitor monitor) {
         if (rootFolder == null) return false;
-        return new File(rootFolder, "WORKSPACE").exists()
+        boolean hasWorkspace = new File(rootFolder, "WORKSPACE").exists()
                 || new File(rootFolder, "WORKSPACE.bazel").exists();
+        if (!hasWorkspace) return false;
+        return new File(rootFolder, ".bazelproject").exists();
     }
 
     @Override

@@ -107,34 +107,7 @@ public class BazelProjectImporter extends AbstractProjectImporter {
                     project.open(monitor);
                 }
 
-                org.eclipse.core.resources.IProjectDescription desc =
-                    project.getDescription();
-                String[] natureIds = desc.getNatureIds();
-                boolean hasJavaNature = false;
-                boolean hasBazelNature = false;
-                for (String nature : natureIds) {
-                    if (JAVA_NATURE.equals(nature)) {
-                        hasJavaNature = true;
-                    }
-                    if (BazelNature.NATURE_ID.equals(nature)) {
-                        hasBazelNature = true;
-                    }
-                }
-
-                if (!hasJavaNature || !hasBazelNature) {
-                    int extraNatures = (hasJavaNature ? 0 : 1) + (hasBazelNature ? 0 : 1);
-                    String[] newNatureIds = new String[natureIds.length + extraNatures];
-                    System.arraycopy(natureIds, 0, newNatureIds, 0, natureIds.length);
-                    int idx = natureIds.length;
-                    if (!hasJavaNature) {
-                        newNatureIds[idx++] = JAVA_NATURE;
-                    }
-                    if (!hasBazelNature) {
-                        newNatureIds[idx] = BazelNature.NATURE_ID;
-                    }
-                    desc.setNatureIds(newNatureIds);
-                    project.setDescription(desc, monitor);
-                }
+                ensureNatures(project, monitor);
 
                 TargetProjectMapping.appendTargets(project, Collections.singletonList(targetLabel));
 
@@ -156,6 +129,28 @@ public class BazelProjectImporter extends AbstractProjectImporter {
 
         if ("transitive".equals(bridge.getDependencyResolutionMode())) {
             autoImportTransitiveDeps(bridge, targets, workspacePath, bazelPath, cacheDir, workspaceRoot, monitor);
+        }
+    }
+
+    private static void ensureNatures(IProject project, IProgressMonitor monitor) throws CoreException {
+        org.eclipse.core.resources.IProjectDescription desc = project.getDescription();
+        String[] natureIds = desc.getNatureIds();
+        boolean hasJavaNature = false;
+        boolean hasBazelNature = false;
+        for (String nature : natureIds) {
+            if (JAVA_NATURE.equals(nature)) hasJavaNature = true;
+            if (BazelNature.NATURE_ID.equals(nature)) hasBazelNature = true;
+        }
+
+        if (!hasJavaNature || !hasBazelNature) {
+            int extra = (hasJavaNature ? 0 : 1) + (hasBazelNature ? 0 : 1);
+            String[] newNatureIds = new String[natureIds.length + extra];
+            System.arraycopy(natureIds, 0, newNatureIds, 0, natureIds.length);
+            int idx = natureIds.length;
+            if (!hasJavaNature) newNatureIds[idx++] = JAVA_NATURE;
+            if (!hasBazelNature) newNatureIds[idx] = BazelNature.NATURE_ID;
+            desc.setNatureIds(newNatureIds);
+            project.setDescription(desc, monitor);
         }
     }
 
@@ -202,24 +197,7 @@ public class BazelProjectImporter extends AbstractProjectImporter {
                         project.open(monitor);
                     }
 
-                    org.eclipse.core.resources.IProjectDescription desc = project.getDescription();
-                    String[] natureIds = desc.getNatureIds();
-                    boolean hasJavaNature = false;
-                    boolean hasBazelNature = false;
-                    for (String nature : natureIds) {
-                        if (JAVA_NATURE.equals(nature)) hasJavaNature = true;
-                        if (BazelNature.NATURE_ID.equals(nature)) hasBazelNature = true;
-                    }
-                    if (!hasJavaNature || !hasBazelNature) {
-                        int extra = (hasJavaNature ? 0 : 1) + (hasBazelNature ? 0 : 1);
-                        String[] newNatures = new String[natureIds.length + extra];
-                        System.arraycopy(natureIds, 0, newNatures, 0, natureIds.length);
-                        int idx = natureIds.length;
-                        if (!hasJavaNature) newNatures[idx++] = JAVA_NATURE;
-                        if (!hasBazelNature) newNatures[idx] = BazelNature.NATURE_ID;
-                        desc.setNatureIds(newNatures);
-                        project.setDescription(desc, monitor);
-                    }
+                    ensureNatures(project, monitor);
 
                     TargetProjectMapping.appendTargets(project, Collections.singletonList(depLabel));
                     TargetProjectMapping.setAutoImported(project, true);

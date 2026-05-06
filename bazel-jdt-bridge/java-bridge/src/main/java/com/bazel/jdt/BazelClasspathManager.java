@@ -14,7 +14,9 @@ import org.eclipse.jdt.core.JavaCore;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 public class BazelClasspathManager {
     private static final ILog LOG = Platform.getLog(BazelClasspathManager.class);
@@ -129,15 +131,15 @@ public class BazelClasspathManager {
     }
 
     private static List<String> extractTargetLabels(IProject project, List<String> changedFiles) {
-        List<String> labels = new ArrayList<>();
+        Set<String> labels = new LinkedHashSet<>();
         try {
             if (!project.isOpen() || !project.hasNature(BazelNature.NATURE_ID)) {
-                return labels;
+                return new ArrayList<>(labels);
             }
         } catch (CoreException e) {
             LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
                 "Nature check failed for project " + project.getName(), e));
-            return labels;
+            return new ArrayList<>(labels);
         }
 
         BazelBridge bridge = BazelBridge.getInstance();
@@ -148,11 +150,7 @@ public class BazelClasspathManager {
             String pendingPackage = pending.startsWith("//") ? pending.substring(2) : pending;
             if (projectName.equals(pendingPackage)) {
                 List<String> stored = TargetProjectMapping.readTargets(project);
-                for (String label : stored) {
-                    if (!labels.contains(label)) {
-                        labels.add(label);
-                    }
-                }
+                labels.addAll(stored);
             }
         }
 
@@ -160,15 +158,11 @@ public class BazelClasspathManager {
             for (String filePath : changedFiles) {
                 if (filePath.contains(projectName)) {
                     List<String> stored = TargetProjectMapping.readTargets(project);
-                    for (String label : stored) {
-                        if (!labels.contains(label)) {
-                            labels.add(label);
-                        }
-                    }
+                    labels.addAll(stored);
                     break;
                 }
             }
         }
-        return labels;
+        return new ArrayList<>(labels);
     }
 }

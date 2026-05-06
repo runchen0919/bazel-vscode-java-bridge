@@ -8,10 +8,14 @@ import org.eclipse.core.runtime.QualifiedName;
 import org.osgi.framework.Bundle;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HexFormat;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -136,13 +140,13 @@ public final class TargetProjectMapping {
     }
 
     private static String sanitizeLabel(String label) {
-        return label
-                .replace("//", "_")
-                .replace(":", "_")
-                .replace("@", "_")
-                .replace("/", "_")
-                .replace("~", "_")
-                + ".cache";
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(label.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(hash).substring(0, 16) + ".cache";
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException("SHA-256 not available", e);
+        }
     }
 
     private static Path getCacheDir() throws IOException {

@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
 import { getConfig } from './config';
 import { runImportWizard } from './importWizard';
 import { parseBazelprojectFile } from './bazelproject';
@@ -65,8 +64,12 @@ export function registerRuntimeCommands(context: vscode.ExtensionContext) {
                 'Clear Cache'
             );
             if (confirm === 'Clear Cache') {
-                await vscode.commands.executeCommand('java.execute.workspaceCommand', 'bazel-jdt.cleanCache');
-                vscode.window.showInformationMessage('Bazel cache cleared');
+                try {
+                    await vscode.commands.executeCommand('java.execute.workspaceCommand', 'bazel-jdt.cleanCache');
+                    vscode.window.showInformationMessage('Bazel cache cleared');
+                } catch (error) {
+                    vscode.window.showErrorMessage(`Failed to clear cache: ${error}`);
+                }
             }
         })
     );

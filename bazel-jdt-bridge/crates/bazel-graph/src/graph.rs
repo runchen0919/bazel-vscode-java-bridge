@@ -182,7 +182,10 @@ impl DependencyGraph {
         results: &[bazel_aspect::TargetIdeInfo],
         workspace_root: &std::path::Path,
     ) {
-        eprintln!("[bazel-jdt] populate_from_aspects called with workspace_root='{}'", workspace_root.display());
+        log::debug!(
+            "[bazel-jdt] populate_from_aspects called with workspace_root='{}'",
+            workspace_root.display()
+        );
         for info in results {
             let label = &info.label;
             self.add_target(label);
@@ -218,11 +221,12 @@ impl DependencyGraph {
 
                 let mut source_map: HashMap<String, String> = HashMap::new();
                 for jar_info in &java_info.jars {
-                    if let (Some(bin_path), Some(src_path)) =
-                        (jar_info.jar.best_path(), jar_info.source_jar.as_ref().and_then(|s| s.best_path()))
-                    {
-                        let resolved_src = resolve_external_path(&src_path, workspace_root)
-                            .unwrap_or(src_path);
+                    if let (Some(bin_path), Some(src_path)) = (
+                        jar_info.jar.best_path(),
+                        jar_info.source_jar.as_ref().and_then(|s| s.best_path()),
+                    ) {
+                        let resolved_src =
+                            resolve_external_path(&src_path, workspace_root).unwrap_or(src_path);
                         source_map.insert(bin_path, resolved_src);
                     }
                 }
@@ -235,8 +239,8 @@ impl DependencyGraph {
                         .iter()
                         .filter_map(|s| {
                             s.best_path().map(|p| {
-                                let resolved = resolve_external_path(&p, workspace_root)
-                                    .unwrap_or(p);
+                                let resolved =
+                                    resolve_external_path(&p, workspace_root).unwrap_or(p);
                                 (parent_key(&resolved), resolved)
                             })
                         })
@@ -250,9 +254,13 @@ impl DependencyGraph {
                 }
 
                 if !source_map.is_empty() {
-                    eprintln!("[bazel-jdt] source_map for '{}': {} entries", label, source_map.len());
+                    log::debug!(
+                        "[bazel-jdt] source_map for '{}': {} entries",
+                        label,
+                        source_map.len()
+                    );
                     for (bin, src) in &source_map {
-                        eprintln!("[bazel-jdt]   {} -> {}", bin, src);
+                        log::trace!("[bazel-jdt]   {} -> {}", bin, src);
                     }
                     self.target_source_jars.insert(label.clone(), source_map);
                 }
@@ -372,9 +380,10 @@ fn resolve_external_path(path: &str, workspace_root: &std::path::Path) -> Option
                 let candidate = execroot.join(&relative);
                 if candidate.exists() {
                     let result = candidate.to_string_lossy().into_owned();
-                    eprintln!(
+                    log::debug!(
                         "[bazel-jdt] resolve_external_path: '{}' -> '{}' (execroot)",
-                        path, result
+                        path,
+                        result
                     );
                     return Some(result);
                 }
@@ -382,21 +391,22 @@ fn resolve_external_path(path: &str, workspace_root: &std::path::Path) -> Option
                     let candidate = output_base.join(&relative);
                     if candidate.exists() {
                         let result = candidate.to_string_lossy().into_owned();
-                        eprintln!(
+                        log::debug!(
                             "[bazel-jdt] resolve_external_path: '{}' -> '{}' (output_base)",
-                            path, result
+                            path,
+                            result
                         );
                         return Some(result);
                     }
                 }
                 let result = execroot.join(&relative).to_string_lossy().into_owned();
-                eprintln!(
+                log::debug!(
                     "[bazel-jdt] resolve_external_path: '{}' -> '{}' (execroot, file not yet found)",
                     path, result
                 );
                 Some(result)
             } else {
-                eprintln!(
+                log::debug!(
                     "[bazel-jdt] resolve_external_path: no parent for bazel-out '{}'",
                     resolved.display()
                 );
@@ -404,7 +414,7 @@ fn resolve_external_path(path: &str, workspace_root: &std::path::Path) -> Option
             }
         }
         Err(e) => {
-            eprintln!(
+            log::debug!(
                 "[bazel-jdt] resolve_external_path: canonicalize('{}') failed: {}",
                 bazel_out.display(),
                 e
@@ -488,7 +498,7 @@ mod tests {
             make_target("//baz:app", vec!["//foo:lib"], vec![]),
         ];
 
-graph.populate_from_aspects(&results, Path::new("/workspace"));
+        graph.populate_from_aspects(&results, Path::new("/workspace"));
     }
 
     #[test]
@@ -808,7 +818,8 @@ graph.populate_from_aspects(&results, Path::new("/workspace"));
                 jars: vec![],
                 compile_jars: vec![ArtifactLocation {
                     absolute_path: Some(
-                        "external/maven/guava/33.4.0-jre/processed_guava-33.4.0-jre.jar".to_string(),
+                        "external/maven/guava/33.4.0-jre/processed_guava-33.4.0-jre.jar"
+                            .to_string(),
                     ),
                     ..Default::default()
                 }],
@@ -844,8 +855,12 @@ graph.populate_from_aspects(&results, Path::new("/workspace"));
 
         let mut source_map = HashMap::new();
         source_map.insert("/guava.jar".to_string(), "/guava-sources.jar".to_string());
-        graph.target_source_jars.insert(canonical.to_string(), source_map);
-        graph.label_aliases.insert(apparent.to_string(), canonical.to_string());
+        graph
+            .target_source_jars
+            .insert(canonical.to_string(), source_map);
+        graph
+            .label_aliases
+            .insert(apparent.to_string(), canonical.to_string());
 
         assert_eq!(
             graph.get_target_source_jar(apparent, "/guava.jar"),

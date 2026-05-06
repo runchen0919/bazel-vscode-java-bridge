@@ -124,6 +124,8 @@ public final class BazelBridge {
     private static final int SYNC_STATE_DEAD = 3;
 
     public int getSyncState() {
+        // Safe to bypass executor: nativeGetSyncState performs a single atomic read
+        // of the sync state field in BazelJdtState — no locks, no I/O, no blocking.
         long h = snapshotHandleNullable();
         if (h == -1) return SYNC_STATE_DEAD;
         return nativeGetSyncState(h);
@@ -148,7 +150,19 @@ public final class BazelBridge {
 
     public void cleanCache() {
         long h = snapshotHandle();
-        nativeCleanCache(h);
+        try {
+            jniExecutor.submit(() -> { nativeCleanCache(h); return null; })
+                .get(JNI_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted during cleanCache", e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException) throw (RuntimeException) cause;
+            throw new RuntimeException("cleanCache failed", cause);
+        } catch (TimeoutException e) {
+            throw new RuntimeException("cleanCache timed out", e);
+        }
     }
 
     public String[] getPendingChanges() {

@@ -4,15 +4,22 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+
+import org.eclipse.core.runtime.ILog;
+import org.eclipse.core.runtime.IStatus;
+import org.eclipse.core.runtime.Platform;
+import org.eclipse.core.runtime.Status;
 
 /**
  * Parses IntelliJ-compatible .bazelproject files.
  * Supported sections: directories, derive_targets_from_directories, targets.
  */
 public final class BazelProjectView {
+    private static final ILog LOG = Platform.getLog(BazelProjectView.class);
     private static final String BAZELPROJECT_FILE = ".bazelproject";
 
     private final List<String> directories = new ArrayList<>();
@@ -37,7 +44,7 @@ public final class BazelProjectView {
         BazelProjectView view = new BazelProjectView();
         String currentSection = null;
 
-        try (BufferedReader reader = new BufferedReader(new FileReader(projectViewFile))) {
+        try (BufferedReader reader = new BufferedReader(new FileReader(projectViewFile, StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
                 String trimmed = line.trim();
@@ -106,7 +113,8 @@ public final class BazelProjectView {
                 }
             }
         } catch (IOException e) {
-            System.err.println("[bazel-jdt] Failed to parse .bazelproject: " + e.getMessage());
+            LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                "Failed to parse .bazelproject: " + e.getMessage(), e));
         }
 
         return view;

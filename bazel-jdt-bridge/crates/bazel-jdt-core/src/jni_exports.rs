@@ -29,6 +29,13 @@ fn get_state(env: &mut JNIEnv, handle: jlong) -> Option<&'static BazelJdtState> 
     let reg = registry().lock().unwrap_or_else(|e| e.into_inner());
     match reg.get(&key) {
         Some(state) => {
+            if state.is_shutdown() {
+                let _ = env.throw_new(
+                    "java/lang/IllegalStateException",
+                    "Bridge has been shut down",
+                );
+                return None;
+            }
             // SAFETY: The Box lives in the registry until nativeShutdown
             // removes it. We return a &'static ref that is valid as long as
             // the entry remains in the registry. JNI functions never hold
@@ -76,10 +83,17 @@ fn parse_java_string_array(env: &mut JNIEnv, array: &JObjectArray) -> Option<Vec
         if let Some(s) = s {
             result.push(s);
         } else {
-            log::warn!("Null or invalid string at index {} in scope_patterns array, skipping", i);
+            log::warn!(
+                "Null or invalid string at index {} in scope_patterns array, skipping",
+                i
+            );
         }
     }
-    if result.is_empty() { None } else { Some(result) }
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
 }
 
 #[no_mangle]
@@ -444,10 +458,14 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeComputeClasspath(
         match bazel_graph::ComputedClasspath::compute_for(&graph, &label, target_kind) {
             Ok(computed) => {
                 let entries = computed.to_pipe_delimited_entries();
-                eprintln!("[bazel-jdt] nativeComputeClasspath '{}' -> {} entries (graph path)", label, entries.len());
+                log::debug!(
+                    "[bazel-jdt] nativeComputeClasspath '{}' -> {} entries (graph path)",
+                    label,
+                    entries.len()
+                );
                 for entry in &entries {
                     if entry.contains("-sources") || entry.contains("source") {
-                        eprintln!("[bazel-jdt]   SOURCE entry: {}", entry);
+                        log::trace!("[bazel-jdt]   SOURCE entry: {}", entry);
                     }
                 }
                 if let Ok(json) = serde_json::to_string(&computed) {
@@ -468,10 +486,14 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeComputeClasspath(
     match run_full_resolution(state, &label, state.shutdown_signal(), build_flags_ref) {
         Ok(resolved) => {
             let entries = resolved.to_pipe_delimited_entries();
-            eprintln!("[bazel-jdt] nativeComputeClasspath '{}' -> {} entries (slow path)", label, entries.len());
+            log::debug!(
+                "[bazel-jdt] nativeComputeClasspath '{}' -> {} entries (slow path)",
+                label,
+                entries.len()
+            );
             for entry in &entries {
                 if entry.contains("-sources") || entry.contains("source") {
-                    eprintln!("[bazel-jdt]   SOURCE entry: {}", entry);
+                    log::trace!("[bazel-jdt]   SOURCE entry: {}", entry);
                 }
             }
             if let Ok(json) = serde_json::to_string(&resolved) {
@@ -690,4 +712,51 @@ fn run_full_resolution(
         infer_target_kind(target_label),
     )
     .map_err(|e| format!("Graph computation failed: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_infer_target_kind_library() {
+        assert_eq!(infer_target_kind("//foo:utils"), TargetKind::JavaLibrary);
+        assert_eq!(infer_target_kind("//app:app_lib"), TargetKind::JavaLibrary);
+        assert_eq!(infer_target_kind("//pkg:Greeter"), TargetKind::JavaLibrary);
+    }
+
+    #[test]
+    fn test_infer_target_kind_test() {
+        assert_eq!(infer_target_kind("//foo:my_test"), TargetKind::JavaTest);
+        assert_eq!(infer_target_kind("//foo:GreeterTest"), TargetKind::JavaTest);
+        assert_eq!(
+            infer_target_kind("//foo:integration_test"),
+            TargetKind::JavaTest
+        );
+    }
+
+    #[test]
+    fn test_infer_target_kind_binary() {
+        assert_eq!(infer_target_kind("//foo:my_binary"), TargetKind::JavaBinary);
+        assert_eq!(infer_target_kind("//foo:AppBinary"), TargetKind::JavaBinary);
+        assert_eq!(infer_target_kind("//foo:main"), TargetKind::JavaBinary);
+    }
+
+    #[test]
+    fn test_infer_target_kind_import() {
+        assert_eq!(infer_target_kind("//foo:my_import"), TargetKind::JavaImport);
+        assert_eq!(
+            infer_target_kind("//foo:MavenImport"),
+            TargetKind::JavaImport
+        );
+    }
+
+    #[test]
+    fn test_infer_target_kind_external() {
+        assert_eq!(infer_target_kind("@maven//:guava"), TargetKind::JavaLibrary);
+        assert_eq!(
+            infer_target_kind("@@rules_jvm_external~maven~maven//:com_google_guava_guava"),
+            TargetKind::JavaLibrary
+        );
+    }
 }

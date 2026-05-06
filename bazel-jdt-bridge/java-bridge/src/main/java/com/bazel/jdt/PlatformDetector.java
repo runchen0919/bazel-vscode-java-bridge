@@ -28,7 +28,7 @@ public final class PlatformDetector {
         if (arch.contains("x86_64") || arch.contains("amd64") || arch.contains("x64")) {
             return "x86_64";
         }
-        if (arch.contains("aarch64") || arch.contains("arm64") || arch.contains("arm")) {
+        if (arch.contains("aarch64") || arch.equals("arm64")) {
             return "aarch64";
         }
         throw new UnsupportedOperationException("Unsupported architecture: " + arch);

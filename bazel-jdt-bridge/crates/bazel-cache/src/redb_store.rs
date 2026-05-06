@@ -163,8 +163,8 @@ impl BazelCache {
         {
             txn.delete_table(CLASSPATH_TABLE)?;
             txn.delete_table(BUILD_HASH_TABLE)?;
-            let _ = txn.open_table(CLASSPATH_TABLE)?;
-            let _ = txn.open_table(BUILD_HASH_TABLE)?;
+            txn.open_table(CLASSPATH_TABLE)?;
+            txn.open_table(BUILD_HASH_TABLE)?;
         }
         txn.commit()?;
         Ok(())

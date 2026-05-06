@@ -1020,7 +1020,9 @@ mod tests {
         assert!(!is_bazel_internal_label("//service:user_service"));
         assert!(!is_bazel_internal_label("@maven//:guava"));
         assert!(!is_bazel_internal_label("@@maven//:guava"));
-        assert!(is_bazel_internal_label("@@bazel_tools//tools/jdk:toolchain"));
+        assert!(is_bazel_internal_label(
+            "@@bazel_tools//tools/jdk:toolchain"
+        ));
         assert!(is_bazel_internal_label("@@local_config_cc//:compiler"));
         assert!(is_bazel_internal_label("@@platforms//cpu:cpu"));
     }

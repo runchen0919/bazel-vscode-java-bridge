@@ -154,7 +154,9 @@ impl BazelInvoker {
             return Ok(Vec::new());
         }
 
-        let aspect_output = self.build_with_aspects(targets, &self.aspect_label, build_flags).await?;
+        let aspect_output = self
+            .build_with_aspects(targets, &self.aspect_label, build_flags)
+            .await?;
 
         let info_files = crate::output::parse_aspect_output_locations(&aspect_output);
 
@@ -202,8 +204,7 @@ pub fn build_java_target_query(scope_patterns: Option<&[String]>) -> String {
         }
     };
 
-    let (positive, negative): (Vec<_>, Vec<_>) =
-        patterns.iter().partition(|p| !p.starts_with('-'));
+    let (positive, negative): (Vec<_>, Vec<_>) = patterns.iter().partition(|p| !p.starts_with('-'));
 
     let scope = if positive.is_empty() {
         DEFAULT_SCOPE.to_string()
@@ -320,10 +321,7 @@ mod tests {
 
     #[test]
     fn test_build_query_with_negative_patterns() {
-        let patterns = vec![
-            "//...:*".to_string(),
-            "-//experimental/...:*".to_string(),
-        ];
+        let patterns = vec!["//...:*".to_string(), "-//experimental/...:*".to_string()];
         let query = build_java_target_query(Some(&patterns));
         assert!(query.contains("kind(java_library, //...:*)"));
         assert!(query.contains("except //experimental/...:*"));

@@ -45,6 +45,10 @@ public final class NativeLoader {
             LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
                 "Failed to load native library: " + e.getMessage(), e));
             throw new RuntimeException("Failed to load native library: " + e.getMessage(), e);
+        } catch (UnsatisfiedLinkError e) {
+            LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
+                "Native library not found for platform '" + platform + "': " + e.getMessage(), e));
+            throw new RuntimeException("Native library not found for platform '" + platform + "'", e);
         }
     }
 

@@ -34,6 +34,7 @@ public final class TargetProjectMapping {
     static final String KEY_BAZEL_PATH = "bazelPath";
     static final String KEY_CACHE_DIR = "cacheDir";
     static final String KEY_CACHED_CLASSPATH = "cachedClasspath";
+    static final String KEY_AUTO_IMPORTED = "autoImported";
 
     private TargetProjectMapping() {}
 
@@ -208,5 +209,40 @@ public final class TargetProjectMapping {
         } catch (IOException e) {
             LOG.error("Failed to clear classpath cache directory", e);
         }
+    }
+
+    public static void setAutoImported(IProject project, boolean autoImported) {
+        try {
+            project.setPersistentProperty(
+                new QualifiedName(QUALIFIER, KEY_AUTO_IMPORTED),
+                autoImported ? "true" : null);
+        } catch (CoreException e) {
+            LOG.error("Failed to set autoImported for '" + project.getName() + "'", e);
+        }
+    }
+
+    public static boolean isAutoImported(IProject project) {
+        try {
+            String value = project.getPersistentProperty(
+                new QualifiedName(QUALIFIER, KEY_AUTO_IMPORTED));
+            return "true".equals(value);
+        } catch (CoreException e) {
+            LOG.error("Failed to read autoImported for '" + project.getName() + "'", e);
+            return false;
+        }
+    }
+
+    public static boolean hasWorkspaceConfig(org.eclipse.core.resources.IWorkspaceRoot workspaceRoot) {
+        for (IProject project : workspaceRoot.getProjects()) {
+            if (!project.isOpen()) continue;
+            try {
+                String ws = project.getPersistentProperty(
+                    new QualifiedName(QUALIFIER, KEY_WORKSPACE_PATH));
+                if (ws != null) return true;
+            } catch (CoreException e) {
+                // ignore
+            }
+        }
+        return false;
     }
 }

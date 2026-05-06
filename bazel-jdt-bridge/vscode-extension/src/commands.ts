@@ -33,7 +33,7 @@ export function registerImportCommand(context: vscode.ExtensionContext) {
                         progress.report({ message: 'Discovering Java targets...' });
                         await vscode.commands.executeCommand('java.execute.workspaceCommand',
                             'bazel-jdt.importProject', workspaceRoot, bazelPath, config.cacheDir,
-                            scopePatterns, buildFlags);
+                            scopePatterns, buildFlags, config.dependencyResolution);
                     }
                 );
                 vscode.window.showInformationMessage('Bazel project imported successfully');
@@ -48,7 +48,9 @@ export function registerRuntimeCommands(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.commands.registerCommand('bazel-jdt.syncProject', async () => {
             try {
-                await vscode.commands.executeCommand('java.execute.workspaceCommand', 'bazel-jdt.syncProject');
+                const config = getConfig();
+                await vscode.commands.executeCommand('java.execute.workspaceCommand',
+                    'bazel-jdt.syncProject', config.dependencyResolution);
             } catch (error) {
                 vscode.window.showErrorMessage(`Bazel sync failed: ${error}`);
             }

@@ -13,6 +13,7 @@ public final class BazelBridge {
     private String lastWorkspacePath;
     private String lastBazelPath;
     private String lastCacheDir;
+    private volatile String dependencyResolutionMode = "transitive";
 
     private static ExecutorService createExecutor() {
         return Executors.newSingleThreadExecutor(r -> {
@@ -137,6 +138,14 @@ public final class BazelBridge {
         }
     }
 
+    public void setDependencyResolutionMode(String mode) {
+        this.dependencyResolutionMode = mode;
+    }
+
+    public String getDependencyResolutionMode() {
+        return this.dependencyResolutionMode;
+    }
+
     public void cleanCache() {
         long h = snapshotHandle();
         nativeCleanCache(h);
@@ -146,6 +155,23 @@ public final class BazelBridge {
         long h = snapshotHandleNullable();
         if (h == -1) return new String[0];
         return nativeGetPendingChanges(h);
+    }
+
+    public String[] getTransitiveWorkspaceDeps(String[] targetLabels) {
+        long h = snapshotHandle();
+        try {
+            return jniExecutor.submit(() -> nativeGetTransitiveWorkspaceDeps(h, targetLabels))
+                .get(JNI_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted during getTransitiveWorkspaceDeps", e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException) throw (RuntimeException) cause;
+            throw new RuntimeException("getTransitiveWorkspaceDeps failed", cause);
+        } catch (TimeoutException e) {
+            throw new RuntimeException("getTransitiveWorkspaceDeps timed out", e);
+        }
     }
 
     private long snapshotHandle() {
@@ -176,4 +202,5 @@ public final class BazelBridge {
     private native int nativeGetSyncState(long handle);
     private native void nativeCleanCache(long handle);
     private native String[] nativeGetPendingChanges(long handle);
+    private native String[] nativeGetTransitiveWorkspaceDeps(long handle, String[] targetLabels);
 }

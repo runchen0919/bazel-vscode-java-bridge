@@ -553,6 +553,57 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeGetPendingChanges(
     }
 }
 
+#[no_mangle]
+pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeGetTransitiveWorkspaceDeps(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    target_labels: JObjectArray,
+) -> jobjectArray {
+    let state = match get_state(&mut env, handle) {
+        Some(s) => s,
+        None => return std::ptr::null_mut(),
+    };
+
+    let labels = match parse_java_string_array(&mut env, &target_labels) {
+        Some(l) => l,
+        None => {
+            return match create_string_array(&mut env, &[]) {
+                Ok(arr) => arr,
+                Err(_) => std::ptr::null_mut(),
+            }
+        }
+    };
+
+    let graph = state.graph.lock().unwrap_or_else(|e| e.into_inner());
+    let mut workspace_deps: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for label in &labels {
+        if let Ok(deps) = graph.transitive_deps(label) {
+            for dep in deps {
+                if !dep.starts_with('@')
+                    && !bazel_graph::is_bazel_internal_label(&dep)
+                    && seen.insert(dep.clone())
+                {
+                    workspace_deps.push(dep);
+                }
+            }
+        }
+    }
+
+    log::info!(
+        "Transitive workspace deps for {} targets: {} labels",
+        labels.len(),
+        workspace_deps.len()
+    );
+
+    match create_string_array(&mut env, &workspace_deps) {
+        Ok(arr) => arr,
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
 fn infer_target_kind(label: &str) -> TargetKind {
     let rule_name = label.rsplit(':').next().unwrap_or(label);
     if rule_name.contains("_test") || rule_name.ends_with("Test") {

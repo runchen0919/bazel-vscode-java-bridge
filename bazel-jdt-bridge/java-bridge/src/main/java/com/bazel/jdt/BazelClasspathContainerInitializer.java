@@ -1,5 +1,6 @@
 package com.bazel.jdt;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -42,7 +43,7 @@ public class BazelClasspathContainerInitializer extends ClasspathContainerInitia
     private void doInitialize(IJavaProject project) throws CoreException {
         BazelBridge bridge = BazelBridge.getInstance();
         if (!bridge.isInitialized()) {
-            recoverFromCache(project);
+            recoverFromCache(project, bridge);
             return;
         }
         List<String> targetLabels = TargetProjectMapping.readTargets(project.getProject());
@@ -58,7 +59,7 @@ public class BazelClasspathContainerInitializer extends ClasspathContainerInitia
         }
     }
 
-    private void recoverFromCache(IJavaProject project) {
+    private void recoverFromCache(IJavaProject project, BazelBridge bridge) {
         List<String> targetLabels = TargetProjectMapping.readTargets(project.getProject());
         if (targetLabels.isEmpty()) {
             LOG.info("No persisted targets for " + project.getProject().getName()
@@ -70,7 +71,9 @@ public class BazelClasspathContainerInitializer extends ClasspathContainerInitia
             String[] cached = TargetProjectMapping.readCachedClasspath(project.getProject(), label);
             if (cached != null && cached.length > 0) {
                 try {
-                    BazelClasspathContainer container = new BazelClasspathContainer(cached);
+                    BazelClasspathContainer container = new BazelClasspathContainer(
+                        cached, Collections.emptyList(),
+                        bridge.getDependencyResolutionMode());
                     JavaCore.setClasspathContainer(
                         BazelClasspathContainer.CONTAINER_PATH,
                         new IJavaProject[]{project},

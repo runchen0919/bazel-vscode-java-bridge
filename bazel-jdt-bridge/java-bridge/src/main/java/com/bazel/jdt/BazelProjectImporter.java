@@ -3,7 +3,10 @@ package com.bazel.jdt;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IWorkspaceRoot;
@@ -149,6 +152,91 @@ public class BazelProjectImporter extends AbstractProjectImporter {
                 LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
                     "Failed to import target: " + targetLabel, e));
             }
+        }
+
+        if ("transitive".equals(bridge.getDependencyResolutionMode())) {
+            autoImportTransitiveDeps(bridge, targets, workspacePath, bazelPath, cacheDir, workspaceRoot, monitor);
+        }
+    }
+
+    private void autoImportTransitiveDeps(BazelBridge bridge, String[] userTargets,
+            String workspacePath, String bazelPath, String cacheDir,
+            IWorkspaceRoot workspaceRoot, IProgressMonitor monitor) {
+        try {
+            String[] allDeps = bridge.getTransitiveWorkspaceDeps(userTargets);
+            if (allDeps == null || allDeps.length == 0) return;
+
+            Set<String> importedPackageNames = new HashSet<>();
+            for (String target : userTargets) {
+                importedPackageNames.add(extractPackageName(target));
+            }
+
+            List<String> missingLabels = new ArrayList<>();
+            for (String depLabel : allDeps) {
+                String pkg = extractPackageName(depLabel);
+                if (!importedPackageNames.contains(pkg) && !workspaceRoot.getProject(pkg).exists()) {
+                    missingLabels.add(depLabel);
+                }
+            }
+
+            if (missingLabels.isEmpty()) return;
+
+            LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                "Auto-importing " + missingLabels.size() + " transitive workspace dependencies"));
+
+            for (String depLabel : missingLabels) {
+                try {
+                    String packageName = extractPackageName(depLabel);
+                    IProject project = workspaceRoot.getProject(packageName);
+
+                    if (!project.exists()) {
+                        File packageDir = new File(workspacePath, packageName);
+                        org.eclipse.core.resources.IProjectDescription projDesc =
+                            project.getWorkspace().newProjectDescription(packageName);
+                        projDesc.setLocation(new Path(packageDir.getAbsolutePath()));
+                        LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                            "Auto-importing transitive dep '" + packageName + "' for " + depLabel));
+                        project.create(projDesc, monitor);
+                    }
+                    if (!project.isOpen()) {
+                        project.open(monitor);
+                    }
+
+                    org.eclipse.core.resources.IProjectDescription desc = project.getDescription();
+                    String[] natureIds = desc.getNatureIds();
+                    boolean hasJavaNature = false;
+                    boolean hasBazelNature = false;
+                    for (String nature : natureIds) {
+                        if (JAVA_NATURE.equals(nature)) hasJavaNature = true;
+                        if (BazelNature.NATURE_ID.equals(nature)) hasBazelNature = true;
+                    }
+                    if (!hasJavaNature || !hasBazelNature) {
+                        int extra = (hasJavaNature ? 0 : 1) + (hasBazelNature ? 0 : 1);
+                        String[] newNatures = new String[natureIds.length + extra];
+                        System.arraycopy(natureIds, 0, newNatures, 0, natureIds.length);
+                        int idx = natureIds.length;
+                        if (!hasJavaNature) newNatures[idx++] = JAVA_NATURE;
+                        if (!hasBazelNature) newNatures[idx] = BazelNature.NATURE_ID;
+                        desc.setNatureIds(newNatures);
+                        project.setDescription(desc, monitor);
+                    }
+
+                    TargetProjectMapping.appendTargets(project, Collections.singletonList(depLabel));
+                    TargetProjectMapping.setAutoImported(project, true);
+
+                    if (!TargetProjectMapping.hasWorkspaceConfig(workspaceRoot)) {
+                        TargetProjectMapping.storeWorkspaceConfig(project, workspacePath, bazelPath, cacheDir);
+                    }
+
+                    configureClasspath(project, packageName, workspacePath, depLabel, monitor);
+                } catch (Exception e) {
+                    LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                        "Failed to auto-import transitive dep: " + depLabel, e));
+                }
+            }
+        } catch (Exception e) {
+            LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                "Transitive dependency auto-import failed", e));
         }
     }
 

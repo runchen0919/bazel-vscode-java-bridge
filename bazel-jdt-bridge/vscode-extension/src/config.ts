@@ -11,6 +11,7 @@ export interface BazelConfig {
     excludeTargets: string[];
     testSources: string[];
     deriveTargets: boolean;
+    dependencyResolution: string;
 }
 
 export function getConfig(): BazelConfig {
@@ -26,5 +27,6 @@ export function getConfig(): BazelConfig {
         excludeTargets: config.get<string[]>('excludeTargets', []),
         testSources: config.get<string[]>('testSources', []),
         deriveTargets: config.get<boolean>('deriveTargets', true),
+        dependencyResolution: config.get<string>('dependencyResolution', 'transitive'),
     };
 }

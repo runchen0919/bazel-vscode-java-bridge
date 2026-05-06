@@ -19,7 +19,7 @@ public class BazelCommandHandler implements IDelegateCommandHandler {
             case "bazel-jdt.importProject":
                 return handleImportProject(arguments);
             case "bazel-jdt.syncProject":
-                return handleSyncProject();
+                return handleSyncProject(arguments);
             case "bazel-jdt.cleanCache":
                 return handleCleanCache();
             case "bazel-jdt.getSyncState":
@@ -60,6 +60,14 @@ public class BazelCommandHandler implements IDelegateCommandHandler {
                 }
             }
 
+            // Accept resolution mode from TypeScript (argument index 5)
+            if (arguments.size() > 5 && arguments.get(5) instanceof String) {
+                String mode = (String) arguments.get(5);
+                bridge.setDependencyResolutionMode(mode);
+                LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                    "Dependency resolution mode set to: " + mode));
+            }
+
             String[] targets = bridge.discoverTargets(scopePatterns, buildFlags);
             BazelClasspathManager.refreshClasspath();
             return null;
@@ -69,8 +77,11 @@ public class BazelCommandHandler implements IDelegateCommandHandler {
         }
     }
 
-    private Object handleSyncProject() {
+    private Object handleSyncProject(List<Object> arguments) {
         try {
+            if (!arguments.isEmpty() && arguments.get(0) instanceof String) {
+                BazelBridge.getInstance().setDependencyResolutionMode((String) arguments.get(0));
+            }
             BazelClasspathManager.refreshClasspath();
             return null;
         } catch (Exception e) {

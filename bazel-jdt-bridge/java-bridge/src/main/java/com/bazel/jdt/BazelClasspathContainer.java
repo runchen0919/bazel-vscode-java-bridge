@@ -20,12 +20,18 @@ public class BazelClasspathContainer implements IClasspathContainer {
 
     private final IClasspathEntry[] entries;
     private final List<String> testSourcePatterns;
+    private final String resolutionMode;
 
     public BazelClasspathContainer(String[] rawEntries) {
-        this(rawEntries, Collections.emptyList());
+        this(rawEntries, Collections.emptyList(), "transitive");
     }
 
     public BazelClasspathContainer(String[] rawEntries, List<String> testSourcePatterns) {
+        this(rawEntries, testSourcePatterns, "transitive");
+    }
+
+    public BazelClasspathContainer(String[] rawEntries, List<String> testSourcePatterns, String resolutionMode) {
+        this.resolutionMode = resolutionMode != null ? resolutionMode : "transitive";
         this.testSourcePatterns = testSourcePatterns != null ? testSourcePatterns : Collections.emptyList();
         List<IClasspathEntry> parsed = new ArrayList<>();
         if (rawEntries == null) {
@@ -84,6 +90,17 @@ public class BazelClasspathContainer implements IClasspathContainer {
                     return null;
                 }
                 String projectName = extractPackageName(path);
+                if ("optional".equals(resolutionMode)) {
+                    IClasspathAttribute[] optionalAttrs = new IClasspathAttribute[]{
+                        JavaCore.newClasspathAttribute(IClasspathAttribute.OPTIONAL, "true")
+                    };
+                    return JavaCore.newProjectEntry(
+                        Path.fromPortableString("/" + projectName),
+                        new IAccessRule[0],
+                        true,
+                        optionalAttrs,
+                        false);
+                }
                 return JavaCore.newProjectEntry(Path.fromPortableString("/" + projectName));
             case "SRC":
                 return JavaCore.newSourceEntry(Path.fromPortableString(path));

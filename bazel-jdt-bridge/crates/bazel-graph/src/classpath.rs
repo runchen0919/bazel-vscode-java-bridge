@@ -95,6 +95,7 @@ impl ComputedClasspath {
 
         let mut entries = Vec::new();
         let mut seen_jars = std::collections::HashSet::new();
+        let mut missing_source_count = 0usize;
 
         for dep_label in &deps {
             let dep_is_testonly = is_test_context && graph.is_testonly(dep_label);
@@ -123,6 +124,9 @@ impl ComputedClasspath {
                 for jar in jars {
                     if seen_jars.insert(jar.clone()) {
                         let source_path = graph.get_target_source_jar(dep_label, jar);
+                        if is_workspace_internal && source_path.is_none() {
+                            missing_source_count += 1;
+                        }
                         entries.push(ClasspathEntry {
                             entry_type: ClasspathEntryType::Library,
                             path: jar.clone(),
@@ -135,6 +139,15 @@ impl ComputedClasspath {
                     }
                 }
             }
+        }
+
+        if missing_source_count > 0 {
+            log::info!(
+                "Target '{}' has {} workspace-internal JARs without source attachments. \
+                 Consider adding 'build --output_groups=+_source_jars' to your .bazelrc for source-level navigation.",
+                target_label,
+                missing_source_count
+            );
         }
 
         let output_jars = graph
@@ -256,7 +269,7 @@ impl ComputedClasspath {
 /// appear on a Java classpath. In Bazel 6+, canonical repo labels use "@@" prefix.
 /// External dependencies like Maven artifacts (e.g. `@@maven+...//:guava`) must NOT
 /// be filtered — only Bazel's own infrastructure targets.
-fn is_bazel_internal_label(label: &str) -> bool {
+pub fn is_bazel_internal_label(label: &str) -> bool {
     label.starts_with("@@bazel_tools//")
         || label.starts_with("@@local_config_")
         || label.starts_with("@@platforms//")
@@ -999,5 +1012,16 @@ mod tests {
             lines[0], "LIB|/guava.jar|/guava-sources.jar|false|false|",
             "Expected source path in pipe-delimited field 2"
         );
+    }
+
+    #[test]
+    fn test_workspace_internal_label_filtering() {
+        assert!(!is_bazel_internal_label("//utils:string_utils"));
+        assert!(!is_bazel_internal_label("//service:user_service"));
+        assert!(!is_bazel_internal_label("@maven//:guava"));
+        assert!(!is_bazel_internal_label("@@maven//:guava"));
+        assert!(is_bazel_internal_label("@@bazel_tools//tools/jdk:toolchain"));
+        assert!(is_bazel_internal_label("@@local_config_cc//:compiler"));
+        assert!(is_bazel_internal_label("@@platforms//cpu:cpu"));
     }
 }

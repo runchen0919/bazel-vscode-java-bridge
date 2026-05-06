@@ -99,6 +99,16 @@
                     "type": "boolean",
                     "default": true,
                     "description": "Whether to derive targets from selected directories in the import wizard"
+                },
+                "bazel-jdt.dependencyResolution": {
+                    "type": "string",
+                    "default": "transitive",
+                    "enum": ["transitive", "optional"],
+                    "enumDescriptions": [
+                        "Automatically import all transitive workspace-internal dependencies as Eclipse projects (recommended)",
+                        "Mark inter-project dependencies as optional — suppresses errors when dependent projects are absent"
+                    ],
+                    "description": "How to handle inter-project dependencies when not all workspace targets are imported. 'transitive' auto-imports all dependencies; 'optional' suppresses errors for missing projects."
                 }
             }
         },

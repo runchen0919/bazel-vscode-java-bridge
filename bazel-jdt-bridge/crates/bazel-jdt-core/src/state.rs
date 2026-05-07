@@ -133,4 +133,189 @@ impl BazelJdtState {
         graph.populate_from_parsed_batch(&parsed, &self.workspace_root);
         Ok(count)
     }
+
+    /// Incrementally sync changed BUILD files into the dependency graph.
+    ///
+    /// For each changed file: parse → surgical graph update → cascade invalidation
+    /// → conditional aspect rebuild. Returns all invalidated target labels
+    /// (directly affected plus reverse transitive dependers).
+    pub fn sync_incremental(
+        &self,
+        changed_files: &[PathBuf],
+    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let mut all_invalidated: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
+        for file_path in changed_files {
+            let new_parsed = match self.parser.parse_file(file_path) {
+                Ok(p) => p,
+                Err(e) => {
+                    log::warn!("Failed to parse {}: {}", file_path.display(), e);
+                    continue;
+                }
+            };
+
+            let package_label = crate::change_detector::compute_build_file_package_label(
+                file_path,
+                &self.workspace_root,
+            );
+
+            if let Ok(hash) = crate::change_detector::compute_file_hash(file_path) {
+                let path_str = file_path.to_string_lossy();
+                let _ = self.cache.put_build_hash(&path_str, &hash);
+            }
+
+            let old_parsed = self.parse_cached_build_file(&package_label);
+
+            let (added, removed, modified) = {
+                let mut graph = self.graph.lock().unwrap_or_else(|e| e.into_inner());
+                graph.update_from_parsed(&new_parsed, &self.workspace_root)
+            };
+
+            let directly_affected: Vec<String> = added
+                .iter()
+                .chain(removed.iter())
+                .chain(modified.iter())
+                .cloned()
+                .collect();
+
+            let cascaded: Vec<String> = {
+                let graph = self.graph.lock().unwrap_or_else(|e| e.into_inner());
+                let mut cascade_labels = Vec::new();
+                for label in &directly_affected {
+                    let deps = graph.reverse_transitive_deps(label);
+                    cascade_labels.extend(deps);
+                }
+                cascade_labels
+            };
+
+            for label in directly_affected.iter().chain(cascaded.iter()) {
+                all_invalidated.insert(label.clone());
+            }
+
+            let needs_aspect = self.should_run_aspect(&old_parsed, &new_parsed, &added);
+
+            if needs_aspect {
+                let labels_to_build: Vec<String> =
+                    added.iter().chain(modified.iter()).cloned().collect();
+
+                if !labels_to_build.is_empty() {
+                    match self.run_aspect_build(&labels_to_build) {
+                        Ok(results) => {
+                            let mut graph = self.graph.lock().unwrap_or_else(|e| e.into_inner());
+                            graph.populate_from_aspects(&results, &self.workspace_root);
+                            log::info!(
+                                "Aspect build for {} targets produced {} results",
+                                labels_to_build.len(),
+                                results.len()
+                            );
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "Aspect build failed for {}: {}. Cache invalidated, will use slow path on next access.",
+                                package_label,
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+
+            let to_invalidate: Vec<String> = all_invalidated.iter().cloned().collect();
+            if !to_invalidate.is_empty() {
+                if let Err(e) = self.cache.invalidate_targets(&to_invalidate) {
+                    log::warn!("Failed to invalidate cache: {}", e);
+                }
+            }
+        }
+
+        let mut result: Vec<String> = all_invalidated.into_iter().collect();
+        result.sort();
+        Ok(result)
+    }
+
+    /// Parse the cached version of a BUILD file by reading existing graph data.
+    /// Returns a synthetic ParsedBuildFile if the graph has targets for this package.
+    fn parse_cached_build_file(
+        &self,
+        package_label: &str,
+    ) -> Option<bazel_parser::model::ParsedBuildFile> {
+        let graph = self.graph.lock().unwrap_or_else(|e| e.into_inner());
+        let labels = graph.targets_in_package(package_label);
+        if labels.is_empty() {
+            return None;
+        }
+
+        let mut rules = Vec::new();
+        for label in &labels {
+            let name = label.rsplit(':').next().unwrap_or(label).to_string();
+            rules.push(bazel_parser::model::JavaRule {
+                rule_type: bazel_parser::model::RuleType::JavaLibrary,
+                name,
+                srcs: vec![],
+                deps: vec![],
+                runtime_deps: vec![],
+                resources: vec![],
+                plugins: vec![],
+                exports: vec![],
+                test_only: false,
+                visibility: vec![],
+            });
+        }
+
+        Some(bazel_parser::model::ParsedBuildFile {
+            path: self.workspace_root.join(
+                package_label
+                    .trim_start_matches("//")
+                    .replace('/', std::path::MAIN_SEPARATOR.to_string().as_str()),
+            ),
+            content_hash: String::new(),
+            rules,
+            loads: vec![],
+        })
+    }
+
+    /// Determine whether an aspect build is needed.
+    /// Aspect builds are expensive, so we only run them when srcs changed or targets are new.
+    fn should_run_aspect(
+        &self,
+        old_parsed: &Option<bazel_parser::model::ParsedBuildFile>,
+        new_parsed: &bazel_parser::model::ParsedBuildFile,
+        added: &[String],
+    ) -> bool {
+        if !added.is_empty() {
+            return true;
+        }
+
+        if let Some(old) = old_parsed {
+            let change_result = crate::change_detector::detect_changes(old, new_parsed);
+            return change_result.is_classpath_relevant;
+        }
+
+        true
+    }
+
+    /// Run aspect build for the given targets.
+    fn run_aspect_build(
+        &self,
+        targets: &[String],
+    ) -> Result<Vec<bazel_aspect::TargetIdeInfo>, String> {
+        let mut shutdown_rx = self.shutdown_signal();
+        self.runtime.block_on(async {
+            tokio::select! {
+                result = tokio::time::timeout(
+                    self.aspect_timeout,
+                    self.invoker.resolve_full_classpath_with_flags(targets, None),
+                ) => {
+                    result.map_err(|_| {
+                        format!("Aspect build timed out after {}s", self.aspect_timeout.as_secs())
+                    })?
+                    .map_err(|e| format!("Aspect build failed: {}", e))
+                }
+                _ = shutdown_rx.changed() => {
+                    Err("Operation cancelled: shutdown requested".to_string())
+                }
+            }
+        })
+    }
 }

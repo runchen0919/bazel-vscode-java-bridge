@@ -14,8 +14,10 @@ import org.eclipse.jdt.core.JavaCore;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 public class BazelClasspathManager {
@@ -109,6 +111,41 @@ public class BazelClasspathManager {
         } catch (Exception e) {
             LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
                 "Failed to refresh classpath for changed files", e));
+        }
+    }
+
+    /**
+     * Refresh classpath for specific target labels.
+     * Used by incremental sync to update only affected targets.
+     */
+    public static void refreshClasspathForTargets(List<String> targetLabels) {
+        if (targetLabels == null || targetLabels.isEmpty()) return;
+        try {
+            org.eclipse.core.resources.IWorkspace workspace =
+                org.eclipse.core.resources.ResourcesPlugin.getWorkspace();
+            IProject[] projects = workspace.getRoot().getProjects();
+
+            // Build target → project mapping
+            Map<String, IProject> targetToProject = new HashMap<>();
+            for (IProject project : projects) {
+                if (!project.isOpen()) continue;
+                List<String> stored = TargetProjectMapping.readTargets(project);
+                for (String label : stored) {
+                    targetToProject.put(label, project);
+                }
+            }
+
+            // Refresh only affected targets
+            for (String targetLabel : targetLabels) {
+                IProject project = targetToProject.get(targetLabel);
+                if (project != null && project.isOpen()) {
+                    setClasspathContainer(project, targetLabel);
+                }
+                // If target not found in any project, skip silently
+            }
+        } catch (Exception e) {
+            LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
+                "Failed to refresh classpath for targets", e));
         }
     }
 

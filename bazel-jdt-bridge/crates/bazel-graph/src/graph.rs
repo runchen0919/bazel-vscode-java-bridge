@@ -1,4 +1,6 @@
 use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::visit::EdgeRef;
+use petgraph::Direction;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Dependency graph of Bazel targets
@@ -280,6 +282,159 @@ impl DependencyGraph {
                 }
             }
         }
+    }
+
+    /// Get all target labels belonging to a specific Bazel package.
+    /// Matches labels of the form `//package/path:name`.
+    pub fn targets_in_package(&self, package_label: &str) -> Vec<String> {
+        let prefix = format!("{}:", package_label);
+        self.label_to_index
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .cloned()
+            .collect()
+    }
+
+    /// Find all targets that directly depend on the given target.
+    /// Uses reverse edge traversal (Direction::Incoming).
+    pub fn direct_dependers(&self, label: &str) -> Vec<String> {
+        let idx = match self.label_to_index.get(label) {
+            Some(&i) => i,
+            None => return Vec::new(),
+        };
+        self.graph
+            .neighbors_directed(idx, Direction::Incoming)
+            .map(|n| self.graph[n].clone())
+            .collect()
+    }
+
+    /// Find all targets that transitively depend on the given target (reverse BFS).
+    /// Returns labels of all ancestors reachable via incoming edges, excluding
+    /// external labels (`@`-prefixed) and Bazel-internal labels.
+    pub fn reverse_transitive_deps(&self, label: &str) -> Vec<String> {
+        let start = match self.label_to_index.get(label) {
+            Some(&i) => i,
+            None => return Vec::new(),
+        };
+
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        let mut result = Vec::new();
+
+        queue.push_back(start);
+
+        while let Some(node) = queue.pop_front() {
+            if visited.contains(&node) {
+                continue;
+            }
+            visited.insert(node);
+
+            for neighbor in self.graph.neighbors_directed(node, Direction::Incoming) {
+                if !visited.contains(&neighbor) {
+                    let dep_label = &self.graph[neighbor];
+                    if dep_label != label {
+                        result.push(dep_label.clone());
+                    }
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Surgically update graph from a newly parsed BUILD file.
+    ///
+    /// Compared to `populate_from_parsed` which only adds, this method:
+    /// - Removes targets that no longer exist in the BUILD file
+    /// - Updates dependency edges for modified targets (preserving JAR data)
+    /// - Adds new targets with their dependency edges
+    ///
+    /// Returns `(added_labels, removed_labels, modified_labels)`.
+    pub fn update_from_parsed(
+        &mut self,
+        new_parsed: &bazel_parser::model::ParsedBuildFile,
+        workspace_root: &std::path::Path,
+    ) -> (Vec<String>, Vec<String>, Vec<String>) {
+        let package_label = compute_package_label_from_build_path(&new_parsed.path, workspace_root);
+
+        let existing_labels: HashSet<String> = self
+            .targets_in_package(&package_label)
+            .into_iter()
+            .collect();
+
+        let new_labels: HashMap<String, &bazel_parser::model::JavaRule> = new_parsed
+            .rules
+            .iter()
+            .map(|r| (format!("{}:{}", package_label, r.name), r))
+            .collect();
+        let new_label_set: HashSet<String> = new_labels.keys().cloned().collect();
+
+        let mut added = Vec::new();
+        let mut removed = Vec::new();
+        let mut modified = Vec::new();
+
+        for label in &existing_labels {
+            if !new_label_set.contains(label) {
+                if let Some(idx) = self.label_to_index.remove(label) {
+                    self.graph.remove_node(idx);
+                }
+                self.target_jars.remove(label);
+                self.target_source_jars.remove(label);
+                self.testonly_targets.remove(label);
+                removed.push(label.clone());
+            }
+        }
+
+        for (label, rule) in &new_labels {
+            if existing_labels.contains(label) {
+                if let Some(&idx) = self.label_to_index.get(label) {
+                    let edge_ids: Vec<_> = self.graph.edges(idx).map(|e| e.id()).collect();
+                    for eid in edge_ids {
+                        self.graph.remove_edge(eid);
+                    }
+                }
+
+                for dep in &rule.deps {
+                    self.add_dep(label, dep);
+                }
+                for dep in &rule.runtime_deps {
+                    self.add_dep(label, dep);
+                }
+                for exp in &rule.exports {
+                    self.add_dep(label, exp);
+                }
+
+                if rule.test_only {
+                    self.testonly_targets.insert(label.clone());
+                } else {
+                    self.testonly_targets.remove(label);
+                }
+
+                modified.push(label.clone());
+            }
+        }
+
+        for (label, rule) in &new_labels {
+            if !existing_labels.contains(label) {
+                self.add_target(label);
+                for dep in &rule.deps {
+                    self.add_dep(label, dep);
+                }
+                for dep in &rule.runtime_deps {
+                    self.add_dep(label, dep);
+                }
+                for exp in &rule.exports {
+                    self.add_dep(label, exp);
+                }
+                if rule.test_only {
+                    self.testonly_targets.insert(label.clone());
+                }
+                added.push(label.clone());
+            }
+        }
+
+        (added, removed, modified)
     }
 
     /// Populate graph from a parsed BUILD file.
@@ -872,5 +1027,275 @@ mod tests {
             Some("/guava-sources.jar".to_string()),
             "Expected source JAR via direct canonical label"
         );
+    }
+
+    #[test]
+    fn test_targets_in_package() {
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target("//foo:lib", vec![], vec!["/foo.jar"]),
+            make_target("//foo:utils", vec![], vec!["/utils.jar"]),
+            make_target("//bar:app", vec!["//foo:lib"], vec!["/app.jar"]),
+        ];
+        graph.populate_from_aspects(&results, Path::new("/workspace"));
+
+        let foo_targets = graph.targets_in_package("//foo");
+        assert_eq!(foo_targets.len(), 2);
+        assert!(foo_targets.contains(&"//foo:lib".to_string()));
+        assert!(foo_targets.contains(&"//foo:utils".to_string()));
+
+        let bar_targets = graph.targets_in_package("//bar");
+        assert_eq!(bar_targets.len(), 1);
+        assert_eq!(bar_targets[0], "//bar:app");
+
+        let empty = graph.targets_in_package("//nonexistent");
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn test_direct_dependers() {
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target("//app:main", vec!["//lib:core", "//lib:utils"], vec![]),
+            make_target("//test:e2e", vec!["//lib:core"], vec![]),
+            make_target("//lib:core", vec![], vec!["/core.jar"]),
+            make_target("//lib:utils", vec![], vec!["/utils.jar"]),
+        ];
+        graph.populate_from_aspects(&results, Path::new("/workspace"));
+
+        let core_dependers = graph.direct_dependers("//lib:core");
+        assert_eq!(core_dependers.len(), 2);
+        assert!(core_dependers.contains(&"//app:main".to_string()));
+        assert!(core_dependers.contains(&"//test:e2e".to_string()));
+
+        let utils_dependers = graph.direct_dependers("//lib:utils");
+        assert_eq!(utils_dependers.len(), 1);
+        assert_eq!(utils_dependers[0], "//app:main");
+
+        let main_dependers = graph.direct_dependers("//app:main");
+        assert!(main_dependers.is_empty());
+
+        let unknown = graph.direct_dependers("//nonexistent:target");
+        assert!(unknown.is_empty());
+    }
+
+    #[test]
+    fn test_reverse_transitive_deps_simple() {
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target("//d:app", vec!["//b:svc"], vec![]),
+            make_target("//b:svc", vec!["//a:lib"], vec![]),
+            make_target("//a:lib", vec![], vec!["/lib.jar"]),
+        ];
+        graph.populate_from_aspects(&results, Path::new("/workspace"));
+
+        let reverse = graph.reverse_transitive_deps("//a:lib");
+        assert_eq!(reverse.len(), 2);
+        assert!(reverse.contains(&"//b:svc".to_string()));
+        assert!(reverse.contains(&"//d:app".to_string()));
+    }
+
+    #[test]
+    fn test_reverse_transitive_deps_chain() {
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target("//d:app", vec!["//c:svc"], vec![]),
+            make_target("//c:svc", vec!["//b:util"], vec![]),
+            make_target("//b:util", vec!["//a:base"], vec![]),
+            make_target("//a:base", vec![], vec!["/base.jar"]),
+        ];
+        graph.populate_from_aspects(&results, Path::new("/workspace"));
+
+        let reverse = graph.reverse_transitive_deps("//a:base");
+        assert_eq!(reverse.len(), 3);
+        assert!(reverse.contains(&"//b:util".to_string()));
+        assert!(reverse.contains(&"//c:svc".to_string()));
+        assert!(reverse.contains(&"//d:app".to_string()));
+    }
+
+    #[test]
+    fn test_update_from_parsed_deps_only_preserves_jars() {
+        let mut graph = DependencyGraph::new();
+        let workspace_root = PathBuf::from("/workspace");
+
+        let aspect_results = vec![
+            make_target("//foo:lib", vec!["//bar:util"], vec!["/foo.jar"]),
+            make_target("//bar:util", vec![], vec!["/util.jar"]),
+        ];
+        graph.populate_from_aspects(&aspect_results, &workspace_root);
+
+        assert!(graph.get_target_jars("//foo:lib").is_some());
+
+        let new_parsed = ParsedBuildFile {
+            path: PathBuf::from("/workspace/foo/BUILD"),
+            content_hash: String::new(),
+            rules: vec![JavaRule {
+                rule_type: RuleType::JavaLibrary,
+                name: "lib".to_string(),
+                srcs: vec!["Lib.java".to_string()],
+                deps: vec!["//baz:new".to_string()],
+                runtime_deps: vec![],
+                resources: vec![],
+                plugins: vec![],
+                exports: vec![],
+                test_only: false,
+                visibility: vec![],
+            }],
+            loads: vec![],
+        };
+
+        let (added, removed, modified) = graph.update_from_parsed(&new_parsed, &workspace_root);
+
+        assert!(added.is_empty());
+        assert!(removed.is_empty());
+        assert_eq!(modified.len(), 1);
+        assert_eq!(modified[0], "//foo:lib");
+
+        assert!(
+            graph.get_target_jars("//foo:lib").is_some(),
+            "JAR data should be preserved after deps-only change"
+        );
+        assert_eq!(graph.get_target_jars("//foo:lib").unwrap()[0], "/foo.jar");
+
+        assert!(graph.has_target("//baz:new"));
+    }
+
+    #[test]
+    fn test_update_from_parsed_target_removed() {
+        let mut graph = DependencyGraph::new();
+        let workspace_root = PathBuf::from("/workspace");
+
+        let parsed = ParsedBuildFile {
+            path: PathBuf::from("/workspace/foo/BUILD"),
+            content_hash: String::new(),
+            rules: vec![
+                JavaRule {
+                    rule_type: RuleType::JavaLibrary,
+                    name: "lib".to_string(),
+                    srcs: vec![],
+                    deps: vec![],
+                    runtime_deps: vec![],
+                    resources: vec![],
+                    plugins: vec![],
+                    exports: vec![],
+                    test_only: false,
+                    visibility: vec![],
+                },
+                JavaRule {
+                    rule_type: RuleType::JavaLibrary,
+                    name: "old".to_string(),
+                    srcs: vec![],
+                    deps: vec![],
+                    runtime_deps: vec![],
+                    resources: vec![],
+                    plugins: vec![],
+                    exports: vec![],
+                    test_only: false,
+                    visibility: vec![],
+                },
+            ],
+            loads: vec![],
+        };
+        graph.populate_from_parsed(&parsed, &workspace_root);
+        assert_eq!(graph.target_count(), 2);
+
+        graph.set_target_jars("//foo:old", vec!["/old.jar".to_string()]);
+
+        let new_parsed = ParsedBuildFile {
+            path: PathBuf::from("/workspace/foo/BUILD"),
+            content_hash: String::new(),
+            rules: vec![JavaRule {
+                rule_type: RuleType::JavaLibrary,
+                name: "lib".to_string(),
+                srcs: vec![],
+                deps: vec![],
+                runtime_deps: vec![],
+                resources: vec![],
+                plugins: vec![],
+                exports: vec![],
+                test_only: false,
+                visibility: vec![],
+            }],
+            loads: vec![],
+        };
+
+        let (added, removed, modified) = graph.update_from_parsed(&new_parsed, &workspace_root);
+
+        assert!(added.is_empty());
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0], "//foo:old");
+        assert!(modified.contains(&"//foo:lib".to_string()));
+
+        assert!(!graph.has_target("//foo:old"));
+        assert!(graph.get_target_jars("//foo:old").is_none());
+        assert!(graph.has_target("//foo:lib"));
+    }
+
+    #[test]
+    fn test_update_from_parsed_target_added() {
+        let mut graph = DependencyGraph::new();
+        let workspace_root = PathBuf::from("/workspace");
+
+        let parsed = ParsedBuildFile {
+            path: PathBuf::from("/workspace/foo/BUILD"),
+            content_hash: String::new(),
+            rules: vec![JavaRule {
+                rule_type: RuleType::JavaLibrary,
+                name: "lib".to_string(),
+                srcs: vec![],
+                deps: vec![],
+                runtime_deps: vec![],
+                resources: vec![],
+                plugins: vec![],
+                exports: vec![],
+                test_only: false,
+                visibility: vec![],
+            }],
+            loads: vec![],
+        };
+        graph.populate_from_parsed(&parsed, &workspace_root);
+        assert_eq!(graph.target_count(), 1);
+
+        let new_parsed = ParsedBuildFile {
+            path: PathBuf::from("/workspace/foo/BUILD"),
+            content_hash: String::new(),
+            rules: vec![
+                JavaRule {
+                    rule_type: RuleType::JavaLibrary,
+                    name: "lib".to_string(),
+                    srcs: vec![],
+                    deps: vec![],
+                    runtime_deps: vec![],
+                    resources: vec![],
+                    plugins: vec![],
+                    exports: vec![],
+                    test_only: false,
+                    visibility: vec![],
+                },
+                JavaRule {
+                    rule_type: RuleType::JavaLibrary,
+                    name: "new_lib".to_string(),
+                    srcs: vec![],
+                    deps: vec!["//bar:util".to_string()],
+                    runtime_deps: vec![],
+                    resources: vec![],
+                    plugins: vec![],
+                    exports: vec![],
+                    test_only: false,
+                    visibility: vec![],
+                },
+            ],
+            loads: vec![],
+        };
+
+        let (added, removed, modified) = graph.update_from_parsed(&new_parsed, &workspace_root);
+
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0], "//foo:new_lib");
+        assert!(removed.is_empty());
+        assert!(modified.contains(&"//foo:lib".to_string()));
+
+        assert!(graph.has_target("//foo:new_lib"));
+        assert!(graph.has_target("//bar:util"));
     }
 }

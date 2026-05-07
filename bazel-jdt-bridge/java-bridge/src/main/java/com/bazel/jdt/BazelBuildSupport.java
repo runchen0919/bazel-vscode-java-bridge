@@ -1,10 +1,13 @@
 package com.bazel.jdt;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IResource;
+import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.ILog;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.IStatus;
@@ -23,6 +26,8 @@ public class BazelBuildSupport implements IBuildSupport {
         "**/WORKSPACE.bazel",
         "**/.bazelproject"
     );
+
+    private static final ConcurrentLinkedQueue<String> pendingChangedFiles = new ConcurrentLinkedQueue<>();
 
     @Override
     public boolean applies(IProject project) {
@@ -58,8 +63,39 @@ public class BazelBuildSupport implements IBuildSupport {
         if (location == null) {
             return false;
         }
-        String filePath = location.toOSString();
-        BazelClasspathManager.refreshClasspathForFiles(Arrays.asList(filePath));
+        pendingChangedFiles.add(location.toOSString());
         return true;
+    }
+
+    @Override
+    public void update(IProject project, boolean force, IProgressMonitor monitor) throws CoreException {
+        List<String> changedFiles = new ArrayList<>();
+        String file;
+        while ((file = pendingChangedFiles.poll()) != null) {
+            changedFiles.add(file);
+        }
+        if (changedFiles.isEmpty()) {
+            return;
+        }
+        try {
+            BazelBridge bridge = BazelBridge.getInstance();
+            if (bridge.isInitialized()) {
+                String[] affectedTargets = bridge.syncIncremental(changedFiles.toArray(new String[0]));
+                if (affectedTargets != null && affectedTargets.length > 0) {
+                    BazelClasspathManager.refreshClasspathForTargets(Arrays.asList(affectedTargets));
+                }
+            } else {
+                BazelClasspathManager.refreshClasspathForFiles(changedFiles);
+            }
+        } catch (Exception e) {
+            LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                "Incremental sync failed, falling back to file-based refresh: " + e.getMessage(), e));
+            BazelClasspathManager.refreshClasspathForFiles(changedFiles);
+        }
+    }
+
+    @Override
+    public String buildToolName() {
+        return "Bazel";
     }
 }

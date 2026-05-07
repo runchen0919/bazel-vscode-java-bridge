@@ -165,6 +165,23 @@ public final class BazelBridge {
         }
     }
 
+    public String[] syncIncremental(String[] changedFilePaths) {
+        long h = snapshotHandle();
+        try {
+            return jniExecutor.submit(() -> nativeSyncIncremental(h, changedFilePaths))
+                .get(JNI_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted during syncIncremental", e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException) throw (RuntimeException) cause;
+            throw new RuntimeException("syncIncremental failed", cause);
+        } catch (TimeoutException e) {
+            throw new RuntimeException("syncIncremental timed out", e);
+        }
+    }
+
     public String[] getPendingChanges() {
         long h = snapshotHandleNullable();
         if (h == -1) return new String[0];
@@ -217,4 +234,5 @@ public final class BazelBridge {
     private native void nativeCleanCache(long handle);
     private native String[] nativeGetPendingChanges(long handle);
     private native String[] nativeGetTransitiveWorkspaceDeps(long handle, String[] targetLabels);
+    private native String[] nativeSyncIncremental(long handle, String[] changedFilePaths);
 }

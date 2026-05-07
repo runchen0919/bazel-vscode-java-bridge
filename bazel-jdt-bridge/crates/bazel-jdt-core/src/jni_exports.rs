@@ -1,6 +1,7 @@
 use crate::state::{BazelJdtState, SyncState};
 use crate::watcher::BuildFileWatcher;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -623,6 +624,49 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeGetTransitiveWorkspa
     match create_string_array(&mut env, &workspace_deps) {
         Ok(arr) => arr,
         Err(_) => std::ptr::null_mut(),
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeSyncIncremental(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    changed_file_paths: JObjectArray,
+) -> jobjectArray {
+    let state = match get_state(&mut env, handle) {
+        Some(s) => s,
+        None => return std::ptr::null_mut(),
+    };
+
+    let changed_files = match parse_java_string_array(&mut env, &changed_file_paths) {
+        Some(paths) => paths.into_iter().map(PathBuf::from).collect::<Vec<_>>(),
+        None => {
+            return match create_string_array(&mut env, &[]) {
+                Ok(arr) => arr,
+                Err(_) => std::ptr::null_mut(),
+            }
+        }
+    };
+
+    state.set_sync_state(SyncState::Syncing);
+
+    match state.sync_incremental(&changed_files) {
+        Ok(affected_labels) => {
+            state.set_sync_state(SyncState::Idle);
+            match create_string_array(&mut env, &affected_labels) {
+                Ok(arr) => arr,
+                Err(_) => std::ptr::null_mut(),
+            }
+        }
+        Err(e) => {
+            state.set_sync_state(SyncState::Error);
+            let _ = env.throw_new(
+                "java/lang/RuntimeException",
+                format!("Incremental sync failed: {}", e),
+            );
+            std::ptr::null_mut()
+        }
     }
 }
 

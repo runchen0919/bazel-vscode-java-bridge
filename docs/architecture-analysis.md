@@ -1,12 +1,12 @@
-# Bazel JDT Bridge — 项目导入完整生命周期分析
+# Bazel JDT Bridge — Complete Project Import Lifecycle Analysis
 
-> 分析版本：2026-05-01 | 分支：001-bazel-java-resolver
+> Analysis version: 2026-05-01 | Branch: 001-bazel-java-resolver
 
 ---
 
-## 1. 系统架构总览
+## 1. System Architecture Overview
 
-### 1.1 四层架构
+### 1.1 Four-Layer Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -16,65 +16,65 @@
 ├─────────────────────────────────────────────────────────┤
 │                  Eclipse JDT.LS                          │
 │              (Java / OSGi Runtime)                       │
-│  提供: ProjectImporter · BuildSupport · Classpath API    │
+│  Provides: ProjectImporter · BuildSupport · Classpath API│
 ├─────────────────────────────────────────────────────────┤
 │               Bazel JDT Bridge (Java)                    │
 │            (OSGi Bundle / Maven / Java 17)               │
-│  13个类: Bridge · Importer · ClasspathManager · ...      │
-│  plugin.xml 注册 5 个扩展点                              │
+│  13 classes: Bridge · Importer · ClasspathManager · ...  │
+│  plugin.xml registers 5 extension points                 │
 ├─────────────────────────────────────────────────────────┤
 │               Bazel JDT Core (Rust)                      │
 │          (cdylib / JNI / Cargo Workspace)                │
-│  6个crate: parser · aspect · query · graph · cache · core│
-│  7个FFI函数 · redb持久缓存 · notify文件监控              │
+│  6 crates: parser · aspect · query · graph · cache · core│
+│  7 FFI functions · redb persistent cache · notify file watching│
 └─────────────────────────────────────────────────────────┘
          │                    │                    │
     VS Code API        JDT.LS Extension      JNI FFI
     workspaceCommand   Points (plugin.xml)   (long handle)
 ```
 
-### 1.2 组件依赖关系
+### 1.2 Component Dependencies
 
 ```mermaid
 graph TB
     subgraph "VS Code Extension (TypeScript)"
-        EXT[extension.ts<br/>激活入口]
-        CMD[commands.ts<br/>命令注册]
-        SB[statusBar.ts<br/>状态轮询]
-        CFG[config.ts<br/>配置读取]
+        EXT[extension.ts<br/>Activation entry]
+        CMD[commands.ts<br/>Command registration]
+        SB[statusBar.ts<br/>Status polling]
+        CFG[config.ts<br/>Config reading]
     end
 
     subgraph "JDT.LS Runtime"
-        JDT[Eclipse JDT.LS<br/>语言服务器]
+        JDT[Eclipse JDT.LS<br/>Language server]
     end
 
     subgraph "Bazel Bridge Bundle (Java OSGi)"
-        ACT[BazelActivator<br/>Bundle生命周期]
-        IMP[BazelProjectImporter<br/>项目导入入口]
-        CPM[BazelClasspathManager<br/>Classpath管理]
+        ACT[BazelActivator<br/>Bundle lifecycle]
+        IMP[BazelProjectImporter<br/>Project import entry]
+        CPM[BazelClasspathManager<br/>Classpath management]
         CPC[BazelClasspathContainer<br/>IClasspathContainer]
-        CPI[BazelClasspathContainerInitializer<br/>容器初始化器]
-        BS[BazelBuildSupport<br/>构建文件监控]
-        CH[BazelCommandHandler<br/>命令路由]
-        BB[BazelBridge<br/>JNI单例桥接]
-        NL[NativeLoader<br/>原生库加载]
-        PD[PlatformDetector<br/>平台检测]
-        NAT[BazelNature<br/>项目Nature]
-        TPM[TargetProjectMapping<br/>目标-项目映射]
-        LU[LabelUtils<br/>标签解析]
+        CPI[BazelClasspathContainerInitializer<br/>Container initializer]
+        BS[BazelBuildSupport<br/>Build file monitoring]
+        CH[BazelCommandHandler<br/>Command routing]
+        BB[BazelBridge<br/>JNI singleton bridge]
+        NL[NativeLoader<br/>Native library loading]
+        PD[PlatformDetector<br/>Platform detection]
+        NAT[BazelNature<br/>Project Nature]
+        TPM[TargetProjectMapping<br/>Target-project mapping]
+        LU[LabelUtils<br/>Label parsing]
     end
 
     subgraph "Rust Core (6 Crates)"
-        JNI[jni_exports.rs<br/>7个FFI函数]
+        JNI[jni_exports.rs<br/>7 FFI functions]
         ST[state.rs<br/>BazelJdtState]
-        WT[watcher.rs<br/>文件监控]
-        CD[change_detector.rs<br/>变更检测]
-        ASP[aspect.rs<br/>Aspect提取]
-        PARSER[bazel-parser<br/>Starlark解析]
-        ASPECT[bazel-aspect<br/>TextProto解析]
-        QUERY[bazel-query<br/>Bazel CLI调用]
-        GRAPH[bazel-graph<br/>依赖图+Classpath]
-        CACHE[bazel-cache<br/>redb KV存储]
+        WT[watcher.rs<br/>File monitoring]
+        CD[change_detector.rs<br/>Change detection]
+        ASP[aspect.rs<br/>Aspect extraction]
+        PARSER[bazel-parser<br/>Starlark parsing]
+        ASPECT[bazel-aspect<br/>TextProto parsing]
+        QUERY[bazel-query<br/>Bazel CLI invocation]
+        GRAPH[bazel-graph<br/>Dependency graph + Classpath]
+        CACHE[bazel-cache<br/>redb KV store]
     end
 
     EXT --> CMD
@@ -133,13 +133,13 @@ graph TB
 
 ---
 
-## 2. 完整生命周期时序图
+## 2. Complete Lifecycle Sequence Diagrams
 
-### 2.1 项目导入主流程
+### 2.1 Project Import Main Flow
 
 ```mermaid
 sequenceDiagram
-    participant User as 用户
+    participant User as User
     participant VSCode as VS Code
     participant RHJava as Red Hat Java<br/>(JDT.LS Host)
     participant JDTLS as JDT.LS
@@ -152,31 +152,31 @@ sequenceDiagram
     participant State as BazelJdtState
     participant Bazel as Bazel CLI
 
-    User->>VSCode: 打开含 WORKSPACE 的目录
+    User->>VSCode: Open directory containing WORKSPACE
     VSCode->>RHJava: activationEvent: workspaceContains:WORKSPACE
-    RHJava->>JDTLS: 启动语言服务器
-    RHJava->>OSGi: 加载 javaExtensions: com.bazel.jdt.jar
+    RHJava->>JDTLS: Start language server
+    RHJava->>OSGi: Load javaExtensions: com.bazel.jdt.jar
 
     rect rgb(230, 240, 255)
-        Note over OSGi,Activator: Phase 0: Bundle 激活
+        Note over OSGi,Activator: Phase 0: Bundle Activation
         OSGi->>Activator: start(bundleContext)
-        Activator->>Activator: 注册 IResourceChangeListener<br/>(清理幽灵项目)
+        Activator->>Activator: Register IResourceChangeListener<br/>(cleanup ghost projects)
     end
 
     rect rgb(230, 255, 230)
-        Note over JDTLS,NativeLoader: Phase 0.5: 原生库加载 (static initializer)
+        Note over JDTLS,NativeLoader: Phase 0.5: Native Library Loading (static initializer)
         JDTLS->>Importer: applies(monitor)
-        Importer->>Importer: 检查 WORKSPACE/WORKSPACE.bazel 存在
+        Importer->>Importer: Check WORKSPACE/WORKSPACE.bazel exists
         Importer-->>JDTLS: true (claim workspace)
     end
 
     rect rgb(255, 245, 230)
-        Note over JDTLS,Importer: Phase 1: 项目导入
+        Note over JDTLS,Importer: Phase 1: Project Import
         JDTLS->>Importer: importToWorkspace(monitor)
         Importer->>Bridge: getInstance()
         Bridge->>NativeLoader: load()
         NativeLoader->>NativeLoader: PlatformDetector.detectPlatform()
-        NativeLoader->>NativeLoader: 从JAR提取.so/.dylib/.dll到临时目录
+        NativeLoader->>NativeLoader: Extract .so/.dylib/.dll from JAR to temp directory
         NativeLoader->>NativeLoader: System.load(tempPath)
 
         Importer->>Bridge: isInitialized()
@@ -188,17 +188,17 @@ sequenceDiagram
         JNI->>State: BazelJdtState::new()
         State->>State: BazelCache::open(cacheDir)
         State->>State: DependencyGraph::new()
-        State->>State: extract_if_needed() → 提取7个.bzl aspect文件
+        State->>State: extract_if_needed() → Extract 7 .bzl aspect files
         State->>State: BazelInvoker::new()
-        State->>State: watch::channel(false) ← shutdown信号
-        State->>State: BuildFileWatcher::start() ← 文件监控线程
+        State->>State: watch::channel(false) ← shutdown signal
+        State->>State: BuildFileWatcher::start() ← file monitoring thread
         JNI-->>Bridge: handle = 42
         Bridge->>Bridge: this.handle = 42
         Bridge->>Bridge: rwLock.writeLock().unlock()
     end
 
     rect rgb(240, 230, 255)
-        Note over Importer,Bazel: Phase 2: 目标发现
+        Note over Importer,Bazel: Phase 2: Target Discovery
         Importer->>Bridge: discoverTargets()
         Bridge->>Bridge: snapshotHandle() → h=42 (readLock)
         Bridge->>JNI: nativeDiscoverTargets(42)
@@ -209,17 +209,17 @@ sequenceDiagram
         Bazel-->>State: //app:lib\n//app:main\n//lib:utils\n...
         State->>State: populate_graph_from_build_files()
         State->>State: change_detector::collect_build_files()
-        loop 每个 BUILD 文件
+        loop Each BUILD file
             State->>State: parser.parse_file() → ParsedBuildFile
-            State->>State: 提取 java_library/binary/test/import 规则
+            State->>State: Extract java_library/binary/test/import rules
         end
         State->>State: graph.populate_from_parsed_batch()
 
         State->>Bazel: bazel build --aspects=//.bazel-jdt/aspects:...<br/>--output_groups=intellij-info-java ...
-        Bazel-->>State: .intellij-info.txt 文件路径列表
-        loop 每个 .intellij-info.txt
+        Bazel-->>State: .intellij-info.txt file path list
+        loop Each .intellij-info.txt
             State->>State: TextProtoParser::parse_target_ide_info()
-            State->>State: 提取: label, kind, jars, deps, exports
+            State->>State: Extract: label, kind, jars, deps, exports
         end
         State->>State: graph.populate_from_aspects()
         State->>State: set_sync_state(Idle)
@@ -227,27 +227,27 @@ sequenceDiagram
     end
 
     rect rgb(255, 230, 230)
-        Note over Importer,State: Phase 3: 项目创建 + Classpath 设置
-        loop 每个 targetLabel
+        Note over Importer,State: Phase 3: Project Creation + Classpath Setup
+        loop Each targetLabel
             Importer->>Importer: extractPackageName(label)<br/>//app:lib → "app"
             Importer->>Importer: workspaceRoot.getProject("app")
-            alt 项目不存在
+            alt Project doesn't exist
                 Importer->>Importer: project.create() + project.open()
             end
-            Importer->>Importer: 设置 natures: javanature + bazelNature
+            Importer->>Importer: Set natures: javanature + bazelNature
             Importer->>Importer: TargetProjectMapping.appendTargets()
-            Importer->>Importer: 配置 source entries
+            Importer->>Importer: Configure source entries
 
             Importer->>Bridge: computeClasspath("//app:lib")
             Bridge->>JNI: nativeComputeClasspath(42, "//app:lib")
 
-            alt Tier 1: 缓存命中
+            alt Tier 1: Cache hit
                 JNI->>State: cache.get_classpath("//app:lib")
                 State-->>JNI: ComputedClasspath JSON
-            else Tier 2: 图计算
+            else Tier 2: Graph computation
                 JNI->>State: graph.transitive_deps("//app:lib") [BFS]
                 JNI->>State: ComputedClasspath::compute_for()
-            else Tier 3: 完整Aspect构建
+            else Tier 3: Full Aspect build
                 JNI->>Bazel: bazel build --aspects=... //app:lib
                 Bazel-->>JNI: .intellij-info.txt
                 JNI->>State: graph.populate_from_aspects()
@@ -265,28 +265,28 @@ sequenceDiagram
     end
 
     rect rgb(230, 255, 255)
-        Note over VSCode,Bridge: Phase 4: VS Code 扩展激活
+        Note over VSCode,Bridge: Phase 4: VS Code Extension Activation
         VSCode->>VSCode: activate(context)
-        VSCode->>VSCode: createStatusBar() ← 状态轮询
-        VSCode->>VSCode: registerCommands() ← 3个命令
+        VSCode->>VSCode: createStatusBar() ← status polling
+        VSCode->>VSCode: registerCommands() ← 3 commands
 
-        loop 每 2-10 秒轮询
+        loop Every 2-10 seconds polling
             VSCode->>Bridge: getSyncState()
             Bridge->>JNI: nativeGetSyncState(42)
             JNI-->>Bridge: 0 (Idle)
             Bridge-->>VSCode: 0
-            VSCode->>VSCode: 状态栏: "Bazel ✓" (绿色)
+            VSCode->>VSCode: Status bar: "Bazel ✓" (green)
         end
     end
 ```
 
-### 2.2 增量同步流程
+### 2.2 Incremental Sync Flow
 
 ```mermaid
 sequenceDiagram
-    participant User as 用户
-    participant FS as 文件系统
-    participant Watcher as BuildFileWatcher<br/>(Rust 线程)
+    participant User as User
+    participant FS as File System
+    participant Watcher as BuildFileWatcher<br/>(Rust Thread)
     participant JDTLS as JDT.LS
     participant BS as BazelBuildSupport
     participant CPM as BazelClasspathManager
@@ -294,22 +294,22 @@ sequenceDiagram
     participant JNI as jni_exports.rs
     participant Cache as BazelCache<br/>(redb)
 
-    Note over User,Cache: 路径A: 文件变更自动触发
+    Note over User,Cache: Path A: Auto-triggered by file change
 
-    User->>FS: 修改 BUILD 文件
-    FS->>Watcher: inotify/FSEvents 通知 (500ms 去抖)
+    User->>FS: Modify BUILD file
+    FS->>Watcher: inotify/FSEvents notification (500ms debounce)
     Watcher->>Watcher: compute_file_hash(path) → SHA-256
     Watcher->>Cache: get_build_hash(path)
     Cache-->>Watcher: old_hash
-    Watcher->>Watcher: 新旧 hash 比较
-    alt hash 未变
-        Watcher->>Watcher: 跳过 (false positive)
-    else hash 改变
+    Watcher->>Watcher: Compare old and new hash
+    alt Hash unchanged
+        Watcher->>Watcher: Skip (false positive)
+    else Hash changed
         Watcher->>Cache: put_build_hash(path, new_hash)
         Watcher->>Watcher: pending_changes.push("//app:*")
     end
 
-    Note over JDTLS,Cache: 路径B: JDT.LS BuildSupport 触发
+    Note over JDTLS,Cache: Path B: JDT.LS BuildSupport trigger
 
     JDTLS->>BS: fileChanged(resource, CHANGE_TYPE)
     BS->>BS: isBuildFile(resource) → true
@@ -320,27 +320,27 @@ sequenceDiagram
     JNI-->>Bridge: String[] pending
     Bridge-->>CPM: ["//app:*"]
 
-    CPM->>CPM: 匹配 affected projects
-    loop 每个匹配的项目
+    CPM->>CPM: Match affected projects
+    loop Each matching project
         CPM->>CPM: extractTargetLabels(project)
         CPM->>Bridge: computeClasspath("//app:lib")
         Bridge->>JNI: nativeComputeClasspath(42, "//app:lib")
-        Note over JNI,Cache: 3-Tier 解析<br/>Tier 2 优先 (graph 已有数据)
+        Note over JNI,Cache: 3-Tier resolution<br/>Tier 2 preferred (graph already has data)
         JNI-->>Bridge: String[] pipe-delimited entries
         CPM->>CPM: JavaCore.setClasspathContainer()
     end
 
-    Note over User,Cache: 路径C: 手动同步命令
+    Note over User,Cache: Path C: Manual sync command
 
     User->>JDTLS: Command Palette → "Bazel: Sync Project"
     JDTLS->>CPM: refreshClasspath()
-    loop 所有 Java 项目
-        CPM->>CPM: read target labels
+    loop All Java projects
+        CPM->>CPM: Read target labels
         CPM->>Bridge: computeClasspath(label)
     end
 ```
 
-### 2.3 关闭流程
+### 2.3 Shutdown Flow
 
 ```mermaid
 sequenceDiagram
@@ -365,54 +365,54 @@ sequenceDiagram
     JNI->>Watcher: stop_nonblocking()
     Watcher-->>JNI: JoinHandle
     JNI->>JNI: join_handle.join()
-    JNI->>JNI: Box<BazelJdtState> dropped (析构所有字段)
+    JNI->>JNI: Box<BazelJdtState> dropped (destructs all fields)
     Note over Bridge,State: handle = -1, executor terminated
 ```
 
 ---
 
-## 3. 状态机
+## 3. State Machine
 
-### 3.1 系统状态转换
+### 3.1 System State Transitions
 
 ```mermaid
 stateDiagram-v2
-    [*] --> BundleLoaded : OSGi 加载 com.bazel.jdt.jar
+    [*] --> BundleLoaded : OSGi loads com.bazel.jdt.jar
 
-    state "Bundle 加载阶段" as Phase0 {
-        BundleLoaded --> NativeLoaded : NativeLoader.load<br/>提取 .so 到临时目录
-        NativeLoaded --> Uninitialized : BazelBridge INSTANCE 创建<br/>handle = -1
+    state "Bundle Loading Phase" as Phase0 {
+        BundleLoaded --> NativeLoaded : NativeLoader.load<br/>Extract .so to temp directory
+        NativeLoaded --> Uninitialized : BazelBridge INSTANCE created<br/>handle = -1
     }
 
-    state "未初始化" as Uninitialized
+    state "Uninitialized" as Uninitialized
 
-    Uninitialized --> Initializing : nativeInitialize<br/>创建 BazelJdtState
+    Uninitialized --> Initializing : nativeInitialize<br/>Create BazelJdtState
 
-    state "初始化中" as Initializing {
-        [*] --> OpenCache : 打开 redb 缓存
-        OpenCache --> ExtractAspects : 提取7个.bzl文件
-        ExtractAspects --> CreateInvoker : 创建 BazelInvoker
-        CreateInvoker --> StartWatcher : 启动文件监控线程
-        StartWatcher --> [*] : handle 有效
+    state "Initializing" as Initializing {
+        [*] --> OpenCache : Open redb cache
+        OpenCache --> ExtractAspects : Extract 7 .bzl files
+        ExtractAspects --> CreateInvoker : Create BazelInvoker
+        CreateInvoker --> StartWatcher : Start file monitoring thread
+        StartWatcher --> [*] : handle valid
     }
 
-    Initializing --> Idle : 初始化成功<br/>handle = ptr
+    Initializing --> Idle : Initialization successful<br/>handle = ptr
 
-    state "活跃状态" as Active {
-        state "空闲" as Idle
-        state "同步中" as Syncing
-        state "错误" as Error
+    state "Active" as Active {
+        state "Idle" as Idle
+        state "Syncing" as Syncing
+        state "Error" as Error
 
-        Idle --> Syncing : discoverTargets<br/>或 computeClasspath
-        Syncing --> Idle : 操作成功
-        Syncing --> Error : 超时/Bazel错误
-        Error --> Syncing : 重试操作
-        Idle --> Idle : getPendingChanges<br/>文件变更入队
+        Idle --> Syncing : discoverTargets<br/>or computeClasspath
+        Syncing --> Idle : Operation successful
+        Syncing --> Error : Timeout/Bazel error
+        Error --> Syncing : Retry operation
+        Idle --> Idle : getPendingChanges<br/>File change enqueued
     }
 
     Active --> ShuttingDown : nativeShutdown
 
-    state "关闭中" as ShuttingDown {
+    state "Shutting Down" as ShuttingDown {
         [*] --> StopExecutor : shutdownNow
         StopExecutor --> SignalShutdown : shutdown_tx.send true
         SignalShutdown --> StopWatcher : watcher.stop
@@ -422,69 +422,69 @@ stateDiagram-v2
 
     ShuttingDown --> Dead : handle = -1
 
-    state "已终止" as Dead
+    state "Terminated" as Dead
 
-    Dead --> Initializing : 重新初始化<br/>先 shutdown 再 initialize
+    Dead --> Initializing : Re-initialize<br/>Shutdown first, then initialize
 ```
 
-### 3.2 Classpath 3-Tier 解析策略
+### 3.2 Classpath 3-Tier Resolution Strategy
 
 ```mermaid
 stateDiagram-v2
-    state "Classpath 请求" as Request
-    state "Tier 1: 缓存" as Tier1
-    state "Tier 2: 图计算" as Tier2
-    state "Tier 3: Bazel构建" as Tier3
+    state "Classpath Request" as Request
+    state "Tier 1: Cache" as Tier1
+    state "Tier 2: Graph Computation" as Tier2
+    state "Tier 3: Bazel Build" as Tier3
 
     [*] --> Request : nativeComputeClasspath
-    Request --> Tier1 : 查询 redb 缓存
+    Request --> Tier1 : Query redb cache
 
     Tier1 --> Hit : cache.get_classpath
-    Hit --> [*] : 返回缓存结果 最快
+    Hit --> [*] : Return cached result (fastest)
 
-    Tier1 --> Miss : 缓存未命中
+    Tier1 --> Miss : Cache miss
     Miss --> Tier2 : graph.get_target_jars
 
-    Tier2 --> HasAspectData : 图中有 Aspect 数据
-    HasAspectData --> Compute : compute_for BFS传递依赖
-    Compute --> CacheAndReturn : 写入 redb 缓存
-    CacheAndReturn --> [*] : 返回计算结果
+    Tier2 --> HasAspectData : Graph has Aspect data
+    HasAspectData --> Compute : compute_for BFS transitive deps
+    Compute --> CacheAndReturn : Write to redb cache
+    CacheAndReturn --> [*] : Return computed result
 
-    Tier2 --> NoAspectData : 图中无 Aspect 数据
+    Tier2 --> NoAspectData : Graph has no Aspect data
     NoAspectData --> Tier3 : run_full_resolution
 
     Tier3 --> AspectBuild : bazel build --aspects
     AspectBuild --> ParseTextProto : TextProtoParser
     ParseTextProto --> PopulateGraph : populate_from_aspects
     PopulateGraph --> Compute2 : compute_for
-    Compute2 --> CacheAndReturn2 : 写入 redb 缓存
-    CacheAndReturn2 --> [*] : 返回构建结果 最慢
+    Compute2 --> CacheAndReturn2 : Write to redb cache
+    CacheAndReturn2 --> [*] : Return build result (slowest)
 ```
 
 ---
 
-## 4. 数据流
+## 4. Data Flow
 
-### 4.1 管道分隔格式 (Rust → Java)
+### 4.1 Pipe-Delimited Format (Rust → Java)
 
 ```
-格式: TYPE|path|sourceAttachmentPath|isTest|isExported|accessRules
+Format: TYPE|path|sourceAttachmentPath|isTest|isExported|accessRules
 
 TYPE:
-  LIB  → JavaCore.newLibraryEntry()     外部JAR
-  PROJ → JavaCore.newProjectEntry()     工作区内部目标
-  SRC  → JavaCore.newSourceEntry()      源码目录
+  LIB  → JavaCore.newLibraryEntry()     External JAR
+  PROJ → JavaCore.newProjectEntry()     Internal workspace target
+  SRC  → JavaCore.newSourceEntry()      Source directory
 
-示例:
+Example:
   LIB|/home/user/.cache/bazel/.../guava.jar||false|false|+com.google.**:-internal.**
   PROJ|//app:lib||false|false|
   SRC|/workspace/app/src/main/java||false|false|
 ```
 
-### 4.2 TextProto 格式 (Bazel Aspect → Rust)
+### 4.2 TextProto Format (Bazel Aspect → Rust)
 
 ```
-Bazel Aspect 输出 .intellij-info.txt (TextProto格式):
+Bazel Aspect outputs .intellij-info.txt (TextProto format):
 
 label: "//app:lib"
 kind: "java_library_"
@@ -499,7 +499,7 @@ runtime_deps { label: "//runtime:driver" }
 exports { label: "//api:public" }
 ```
 
-### 4.3 持久化存储
+### 4.3 Persistent Storage
 
 ```
 Eclipse Persistent Properties (per IProject):
@@ -514,34 +514,34 @@ redb Tables (per workspace):
   build_hash → build_file_path → SHA-256 hex
 ```
 
-### 4.4 完整数据流图
+### 4.4 Complete Data Flow Diagram
 
 ```mermaid
 flowchart LR
     subgraph "Bazel Workspace"
-        BF[BUILD 文件<br/>Starlark语法]
+        BF[BUILD files<br/>Starlark syntax]
         WS[WORKSPACE]
-        JF[.jar 文件<br/>maven_jar/rules]
+        JF[.jar files<br/>maven_jar/rules]
     end
 
     subgraph "Rust: bazel-parser"
         PARSER[BuildFileParser<br/>starlark_syntax AST]
-        PBF[ParsedBuildFile<br/>JavaRule列表]
+        PBF[ParsedBuildFile<br/>JavaRule list]
     end
 
     subgraph "Rust: bazel-query"
-        BAZEL[BazelInvoker<br/>CLI调用]
+        BAZEL[BazelInvoker<br/>CLI invocation]
         LABELS[target labels<br/>//pkg:name]
     end
 
     subgraph "Rust: bazel-aspect"
-        TP[TextProtoParser<br/>递归下降解析]
+        TP[TextProtoParser<br/>Recursive descent parsing]
         TII[TargetIdeInfo<br/>jars/deps/exports]
     end
 
     subgraph "Rust: bazel-graph"
         DG[DependencyGraph<br/>petgraph DiGraph]
-        CC[ComputedClasspath<br/>管道分隔序列化]
+        CC[ComputedClasspath<br/>Pipe-delimited serialization]
     end
 
     subgraph "Rust: bazel-cache"
@@ -549,24 +549,24 @@ flowchart LR
     end
 
     subgraph "Java: OSGi Bundle"
-        BB[BazelBridge<br/>JNI单例]
+        BB[BazelBridge<br/>JNI singleton]
         CPC["BazelClasspathContainer<br/>IClasspathEntry array"]
         TPM[TargetProjectMapping<br/>Eclipse Properties]
     end
 
-    BF -->|文件读取| PARSER
-    PARSER -->|AST解析| PBF
+    BF -->|File read| PARSER
+    PARSER -->|AST parsing| PBF
     PBF -->|populate_from_parsed| DG
 
     BAZEL -->|"bazel query"| LABELS
     BAZEL -->|"bazel build --aspects"| TP
-    TP -->|解析 text_proto| TII
+    TP -->|Parse text_proto| TII
     TII -->|populate_from_aspects| DG
-    LABELS -->|返回Java| BB
+    LABELS -->|Return to Java| BB
 
     DG -->|transitive_deps| CC
-    CC -->|缓存| RDB
-    RDB -->|缓存命中| CC
+    CC -->|Cache| RDB
+    RDB -->|Cache hit| CC
     CC -->|"String array pipe-delimited"| BB
 
     BB -->|parseEntry| CPC
@@ -576,48 +576,48 @@ flowchart LR
 
 ---
 
-## 5. 关键类与方法详解
+## 5. Key Classes and Methods
 
-### 5.1 Java 层核心类
+### 5.1 Java Core Classes
 
-| 类 | 职责 | 关键方法 | 扩展点 |
-|----|------|---------|--------|
-| `BazelBridge` | JNI单例桥接，管理handle和executor | `initialize()`, `discoverTargets()`, `computeClasspath()`, `shutdown()` | — |
-| `BazelProjectImporter` | 项目导入入口，创建Eclipse项目 | `applies()`, `importToWorkspace()`, `configureClasspath()` | `org.eclipse.jdt.ls.core.importers` |
-| `BazelClasspathManager` | 静态工具，设置/刷新Classpath容器 | `setClasspathContainer()`, `refreshClasspath()`, `refreshClasspathForFiles()` | — |
-| `BazelClasspathContainer` | JDT容器实现，解析管道格式 | `getClasspathEntries()`, `getDescription()`, `parseEntry()` | — |
-| `BazelClasspathContainerInitializer` | JDT容器延迟初始化 | `initialize()`, `doInitialize()`, `recoverFromCache()` | `org.eclipse.jdt.core.classpathContainerInitializer` |
-| `BazelBuildSupport` | BUILD文件变更检测 | `fileChanged()`, `isBuildFile()` | `org.eclipse.jdt.ls.core.buildSupport` |
-| `BazelCommandHandler` | VS Code命令路由 | `executeCommand()`, 5个handle方法 | `org.eclipse.jdt.ls.core.delegateCommandHandler` |
-| `BazelActivator` | OSGi Bundle生命周期 | `start()`, `stop()` | `Bundle-Activator` |
-| `NativeLoader` | 原生库提取加载 | `load()` | — |
-| `PlatformDetector` | OS/架构检测 | `detectPlatform()` | — |
-| `BazelNature` | 项目Nature标记 | `setNatures()`, `configure()` | `org.eclipse.core.resources.natures` |
-| `TargetProjectMapping` | 持久化属性存储 | `appendTargets()`, `readTargets()`, `storeCachedClasspath()` | — |
-| `LabelUtils` | 标签解析工具 | `extractPackageName()` | — |
+| Class | Responsibility | Key Methods | Extension Point |
+|-------|---------------|-------------|-----------------|
+| `BazelBridge` | JNI singleton bridge, manages handle and executor | `initialize()`, `discoverTargets()`, `computeClasspath()`, `shutdown()` | — |
+| `BazelProjectImporter` | Project import entry point, creates Eclipse projects | `applies()`, `importToWorkspace()`, `configureClasspath()` | `org.eclipse.jdt.ls.core.importers` |
+| `BazelClasspathManager` | Static utility, sets/refreshes Classpath containers | `setClasspathContainer()`, `refreshClasspath()`, `refreshClasspathForFiles()` | — |
+| `BazelClasspathContainer` | JDT container implementation, parses pipe format | `getClasspathEntries()`, `getDescription()`, `parseEntry()` | — |
+| `BazelClasspathContainerInitializer` | JDT container lazy initialization | `initialize()`, `doInitialize()`, `recoverFromCache()` | `org.eclipse.jdt.core.classpathContainerInitializer` |
+| `BazelBuildSupport` | BUILD file change detection | `fileChanged()`, `isBuildFile()` | `org.eclipse.jdt.ls.core.buildSupport` |
+| `BazelCommandHandler` | VS Code command routing | `executeCommand()`, 5 handle methods | `org.eclipse.jdt.ls.core.delegateCommandHandler` |
+| `BazelActivator` | OSGi Bundle lifecycle | `start()`, `stop()` | `Bundle-Activator` |
+| `NativeLoader` | Native library extraction and loading | `load()` | — |
+| `PlatformDetector` | OS/architecture detection | `detectPlatform()` | — |
+| `BazelNature` | Project Nature marker | `setNatures()`, `configure()` | `org.eclipse.core.resources.natures` |
+| `TargetProjectMapping` | Persistent property storage | `appendTargets()`, `readTargets()`, `storeCachedClasspath()` | — |
+| `LabelUtils` | Label parsing utility | `extractPackageName()` | — |
 
-### 5.2 Rust FFI 函数表
+### 5.2 Rust FFI Function Table
 
-| # | FFI 函数 | Java 签名 | 功能 | 超时 |
-|---|---------|-----------|------|------|
-| 1 | `nativeInitialize` | `long nativeInitialize(String ws, String bazel, String cache)` | 创建全局状态，提取aspects，启动文件监控 | — |
-| 2 | `nativeShutdown` | `void nativeShutdown(long handle)` | 信号关闭，停止监控，释放状态 | 5s |
-| 3 | `nativeDiscoverTargets` | `String[] nativeDiscoverTargets(long handle)` | bazel query + BUILD解析 + 批量aspect构建 | 330s |
-| 4 | `nativeComputeClasspath` | `String[] nativeComputeClasspath(long handle, String target)` | 3-Tier解析：缓存→图→aspect构建 | 330s |
-| 5 | `nativeGetSyncState` | `int nativeGetSyncState(long handle)` | 返回同步状态枚举值 | — |
-| 6 | `nativeCleanCache` | `void nativeCleanCache(long handle)` | 清空redb所有表 | — |
-| 7 | `nativeGetPendingChanges` | `String[] nativeGetPendingChanges(long handle)` | 排空文件变更队列 | — |
+| # | FFI Function | Java Signature | Purpose | Timeout |
+|---|-------------|---------------|---------|---------|
+| 1 | `nativeInitialize` | `long nativeInitialize(String ws, String bazel, String cache)` | Create global state, extract aspects, start file monitoring | — |
+| 2 | `nativeShutdown` | `void nativeShutdown(long handle)` | Signal shutdown, stop monitoring, release state | 5s |
+| 3 | `nativeDiscoverTargets` | `String[] nativeDiscoverTargets(long handle)` | bazel query + BUILD parsing + batch aspect build | 330s |
+| 4 | `nativeComputeClasspath` | `String[] nativeComputeClasspath(long handle, String target)` | 3-Tier resolution: cache → graph → aspect build | 330s |
+| 5 | `nativeGetSyncState` | `int nativeGetSyncState(long handle)` | Return sync state enum value | — |
+| 6 | `nativeCleanCache` | `void nativeCleanCache(long handle)` | Clear all redb tables | — |
+| 7 | `nativeGetPendingChanges` | `String[] nativeGetPendingChanges(long handle)` | Drain file change queue | — |
 
-### 5.3 Rust Crate 依赖图
+### 5.3 Rust Crate Dependency Graph
 
 ```mermaid
 graph TD
-    CORE["bazel-jdt-core<br/>(cdylib + lib)<br/>JNI FFI + 状态管理"]
-    PARSER["bazel-parser<br/>Starlark BUILD 解析"]
-    ASPECT["bazel-aspect<br/>TextProto 解析<br/>(叶子节点)"]
-    QUERY["bazel-query<br/>Bazel CLI 异步调用"]
-    GRAPH["bazel-graph<br/>依赖图 + Classpath"]
-    CACHE["bazel-cache<br/>redb KV 持久存储"]
+    CORE["bazel-jdt-core<br/>(cdylib + lib)<br/>JNI FFI + State management"]
+    PARSER["bazel-parser<br/>Starlark BUILD parsing"]
+    ASPECT["bazel-aspect<br/>TextProto parsing<br/>(leaf node)"]
+    QUERY["bazel-query<br/>Bazel CLI async invocation"]
+    GRAPH["bazel-graph<br/>Dependency graph + Classpath"]
+    CACHE["bazel-cache<br/>redb KV persistent storage"]
 
     CORE --> PARSER
     CORE --> ASPECT
@@ -636,11 +636,11 @@ graph TD
 
 ---
 
-## 6. 构建打包流水线
+## 6. Build & Packaging Pipeline
 
 ```mermaid
 flowchart TD
-    subgraph "Step 1: Rust 编译 (5平台交叉编译)"
+    subgraph "Step 1: Rust Compilation (5-platform cross-compile)"
         RUST["cargo build -p bazel-jdt-core --release"]
         RUST --> SO_LINUX["libbazel_jdt_core.so<br/>(linux-x86_64)"]
         RUST --> SO_LINUX_ARM["libbazel_jdt_core.so<br/>(linux-aarch64)"]
@@ -649,7 +649,7 @@ flowchart TD
         RUST --> DLL_WIN["libbazel_jdt_core.dll<br/>(windows-x86_64)"]
     end
 
-    subgraph "Step 2: 原生库嵌入 Maven Resources"
+    subgraph "Step 2: Native Libraries Embedded in Maven Resources"
         SO_LINUX --> RES1["java-bridge/src/main/resources/native/linux-x86_64/"]
         SO_LINUX_ARM --> RES2["native/linux-aarch64/"]
         DYLIB_MAC --> RES3["native/darwin-x86_64/"]
@@ -657,25 +657,25 @@ flowchart TD
         DLL_WIN --> RES5["native/windows-x86_64/"]
     end
 
-    subgraph "Step 3: Java OSGi Bundle 构建"
+    subgraph "Step 3: Java OSGi Bundle Build"
         MVN["mvn clean package"]
         RES1 & RES2 & RES3 & RES4 & RES5 --> MVN
-        MVN --> JAR["bazel-jdt-bridge-0.1.0.jar<br/>(含 Bundle-NativeCode)"]
+        MVN --> JAR["bazel-jdt-bridge-0.1.0.jar<br/>(includes Bundle-NativeCode)"]
     end
 
-    subgraph "Step 4: TypeScript 编译"
+    subgraph "Step 4: TypeScript Compilation"
         NPM["npm run build (esbuild)"]
         NPM --> DIST["dist/extension.js"]
     end
 
-    subgraph "Step 5: VSIX 组装"
+    subgraph "Step 5: VSIX Assembly"
         PKG["package-extension.sh"]
         JAR --> PKG
         DIST --> PKG
-        PKG --> VSIX["bazel-jdt-bridge-0.1.0.vsix<br/>(VS Code 插件包)"]
+        PKG --> VSIX["bazel-jdt-bridge-0.1.0.vsix<br/>(VS Code extension package)"]
     end
 
-    subgraph "VSIX 内部结构"
+    subgraph "VSIX Internal Structure"
         VSIX --> VSIX_STRUCT["├── server/<br/>│   └── com.bazel.jdt.jar<br/>│       ├── BazelBridge.class<br/>│       ├── plugin.xml<br/>│       └── native/<br/>│           ├── linux-x86_64/*.so<br/>│           ├── darwin-x86_64/*.dylib<br/>│           └── ...<br/>├── dist/<br/>│   └── extension.js<br/>└── package.json"]
     end
 
@@ -685,32 +685,32 @@ flowchart TD
 
 ---
 
-## 7. 设计分析
+## 7. Design Analysis
 
-### 7.1 架构亮点
+### 7.1 Architecture Highlights
 
-| 设计决策 | 分析 |
-|---------|------|
-| **Handle-based State** | Java 持有 `jlong` 键，Rust 持有 `Box<BazelJdtState>` 在全局 HashMap。解耦了两层内存管理，但无 generation/lifetime 校验 — shutdown 后调用是 UB。 |
-| **3-Tier Classpath 解析** | 缓存 → 图计算 → Bazel构建。大多数请求命中 Tier 2（图已有 Aspect 数据），只有新目标或缓存失效才走 Tier 3。分层设计有效减少 Bazel 调用。 |
-| **Single-Thread JNI Executor** | 所有 JNI 调用序列化到单线程 `jniExecutor`，避免并发 JNI 调用。`ReentrantReadWriteLock` 保护 handle 读写。 |
-| **Bundled Aspects** | 7个 `.bzl` 文件通过 `include_str!()` 嵌入 Rust 二进制，首次运行提取到 `.bazel-jdt/aspects/`，版本用 SHA-256 跟踪。自包含，无需额外安装。 |
-| **双路径触发** | 自动触发（JDT.LS importer）+ 手动触发（VS Code 命令）。幂等守卫防止双重初始化。 |
-| **持久化恢复** | `BazelClasspathContainerInitializer.recoverFromCache()` 从 Eclipse persistent properties 恢复 classpath，无需重跑 Bazel。IDE 重启快速恢复。 |
+| Design Decision | Analysis |
+|---------------|----------|
+| **Handle-based State** | Java holds a `jlong` key, Rust holds `Box<BazelJdtState>` in a global HashMap. Decouples two-layer memory management, but lacks generation/lifetime validation — calling after shutdown is UB. |
+| **3-Tier Classpath Resolution** | Cache → graph computation → Bazel build. Most requests hit Tier 2 (graph already has Aspect data); only new targets or cache invalidation fall through to Tier 3. Layered design effectively reduces Bazel invocations. |
+| **Single-Thread JNI Executor** | All JNI calls are serialized to a single-thread `jniExecutor`, avoiding concurrent JNI calls. `ReentrantReadWriteLock` protects handle read/write. |
+| **Bundled Aspects** | 7 `.bzl` files are embedded in the Rust binary via `include_str!()`, extracted to `.bazel-jdt/aspects/` on first run, with versioning tracked via SHA-256. Self-contained, no additional installation needed. |
+| **Dual-Path Trigger** | Auto-trigger (JDT.LS importer) + manual trigger (VS Code commands). Idempotency guard prevents double initialization. |
+| **Persistent Recovery** | `BazelClasspathContainerInitializer.recoverFromCache()` restores classpath from Eclipse persistent properties without re-running Bazel. Fast IDE restart recovery. |
 
-### 7.2 已知风险与反模式
+### 7.2 Known Risks & Anti-Patterns
 
-| 风险 | 严重性 | 位置 | 说明 |
-|------|--------|------|------|
-| **JNI Use-After-Free** | 高 | `BazelBridge.snapshotHandle()` | shutdown 后 handle=-1，但并发 executor 中的任务可能仍在使用旧 handle。无 generation counter 或 guard。 |
-| **空 catch 块** | 中 | `BazelClasspathManager` (3处), `BazelProjectImporter` (1处) | 异常被静默吞掉，可能掩盖关键错误。 |
-| **filter_by_visibility 空实现** | 中 | `classpath.rs::filter_by_visibility()` | 函数体为空，所有目标都通过可见性过滤。Bazel visibility 规则未生效。 |
-| **NativeLoader 手动提取** | 低 | `NativeLoader.java` | `Bundle-NativeCode` 声明在 bnd.bnd 但实际不用 OSGi 原生加载机制。声明与实现不一致。 |
-| **幂等守卫不对等** | 低 | `BazelProjectImporter` vs `BazelCommandHandler` | importer 有 `isInitialized()` 守卫跳过重复导入；command handler 的 `handleImportProject` 没有，可以强制重新初始化。设计意图但可能混淆。 |
-| **syncOnSave 死代码** | 低 | `config.ts` | 配置项声明但未使用。BUILD 文件监控完全由 Java 层 `BazelBuildSupport` 处理。 |
-| **打包验证宽松** | 低 | `package-extension.sh` | 原生库缺失只 WARNING 不 ERROR (`|| true`)，可能产出不含原生库的 VSIX。 |
+| Risk | Severity | Location | Description |
+|------|----------|----------|-------------|
+| **JNI Use-After-Free** | High | `BazelBridge.snapshotHandle()` | After shutdown, handle=-1, but concurrent executor tasks may still use the old handle. No generation counter or guard. |
+| **Empty catch blocks** | Medium | `BazelClasspathManager` (3 places), `BazelProjectImporter` (1 place) | Exceptions are silently swallowed, potentially masking critical errors. |
+| **filter_by_visibility empty implementation** | Medium | `classpath.rs::filter_by_visibility()` | Function body is empty; all targets pass visibility filtering. Bazel visibility rules are not enforced. |
+| **NativeLoader manual extraction** | Low | `NativeLoader.java` | `Bundle-NativeCode` is declared in bnd.bnd but OSGi native loading mechanism is not actually used. Declaration and implementation are inconsistent. |
+| **Asymmetric idempotency guards** | Low | `BazelProjectImporter` vs `BazelCommandHandler` | Importer has `isInitialized()` guard to skip duplicate imports; command handler's `handleImportProject` does not, allowing forced re-initialization. Intentional design but potentially confusing. |
+| **syncOnSave dead code** | Low | `config.ts` | Configuration item declared but unused. BUILD file monitoring is entirely handled by Java layer's `BazelBuildSupport`. |
+| **Lenient packaging validation** | Low | `package-extension.sh` | Missing native libraries only produce WARNING not ERROR (`|| true`), potentially producing a VSIX without native libraries. |
 
-### 7.3 线程模型
+### 7.3 Thread Model
 
 ```
 ┌──────────────────────────────────────────────────┐
@@ -730,60 +730,60 @@ flowchart TD
 
 ┌──────────────────────────────────────────────────┐
 │ bazel-jdt-native Thread (Java single-thread)     │
-│   所有 JNI 调用序列化执行                          │
+│   All JNI calls serialized for execution          │
 │   nativeInitialize / nativeDiscoverTargets / ...  │
-│   ReentrantReadWriteLock 保护 handle              │
+│   ReentrantReadWriteLock protects handle          │
 └──────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────┐
 │ bazel-jdt-build-watcher Thread (Rust OS thread)  │
 │   notify debouncer (500ms)                        │
-│   SHA-256 hash 比较                               │
-│   pending_changes 队列                            │
+│   SHA-256 hash comparison                        │
+│   pending_changes queue                          │
 └──────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────┐
 │ Tokio Runtime (Rust async)                       │
-│   BazelInvoker: bazel query/build 子进程          │
-│   shutdown watch channel 监听                     │
+│   BazelInvoker: bazel query/build subprocesses   │
+│   shutdown watch channel listener                │
 └──────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 8. 命令路由表
+## 8. Command Routing Table
 
-| VS Code 命令 | TS Handler | Java Handler | JNI 调用 | 功能 |
-|-------------|-----------|-------------|---------|------|
-| `bazel-jdt.importProject` | 进度窗口 "Discovering Java targets..." | `handleImportProject()` → initialize + discoverTargets + refreshClasspath | nativeInitialize + nativeDiscoverTargets + N×nativeComputeClasspath | 完整重新导入 |
-| `bazel-jdt.syncProject` | 无UI | `handleSyncProject()` → refreshClasspath | N×nativeComputeClasspath | 增量同步 |
-| `bazel-jdt.cleanCache` | 确认对话框 | `handleCleanCache()` | nativeCleanCache | 清空redb缓存 |
-| `bazel-jdt.getSyncState` | 状态栏自动调用 | 直接调用 | nativeGetSyncState | 查询状态 |
-| `bazel-jdt.shutdown` | deactivate() 自动调用 | `handleShutdown()` | nativeShutdown | 关闭清理 |
+| VS Code Command | TS Handler | Java Handler | JNI Call | Purpose |
+|----------------|-----------|-------------|---------|---------|
+| `bazel-jdt.importProject` | Progress window "Discovering Java targets..." | `handleImportProject()` → initialize + discoverTargets + refreshClasspath | nativeInitialize + nativeDiscoverTargets + N×nativeComputeClasspath | Full re-import |
+| `bazel-jdt.syncProject` | No UI | `handleSyncProject()` → refreshClasspath | N×nativeComputeClasspath | Incremental sync |
+| `bazel-jdt.cleanCache` | Confirmation dialog | `handleCleanCache()` | nativeCleanCache | Clear redb cache |
+| `bazel-jdt.getSyncState` | Auto-called by status bar | Direct call | nativeGetSyncState | Query state |
+| `bazel-jdt.shutdown` | Auto-called by deactivate() | `handleShutdown()` | nativeShutdown | Shutdown cleanup |
 
 ---
 
-## 9. plugin.xml 扩展点注册
+## 9. plugin.xml Extension Point Registration
 
 ```xml
-<!-- 项目导入器 (order=200, 优先级较低) -->
+<!-- Project importer (order=200, lower priority) -->
 <extension point="org.eclipse.jdt.ls.core.importers">
     <importer class="com.bazel.jdt.BazelProjectImporter" order="200"/>
 </extension>
 
-<!-- 构建支持 (BUILD文件变更检测) -->
+<!-- Build support (BUILD file change detection) -->
 <extension point="org.eclipse.jdt.ls.core.buildSupport">
     <buildSupport class="com.bazel.jdt.BazelBuildSupport" order="200"/>
 </extension>
 
-<!-- Classpath容器初始化器 -->
+<!-- Classpath container initializer -->
 <extension point="org.eclipse.jdt.core.classpathContainerInitializer">
     <classpathContainerInitializer
         id="com.bazel.jdt.BAZEL_CONTAINER"
         class="com.bazel.jdt.BazelClasspathContainerInitializer"/>
 </extension>
 
-<!-- VS Code 命令处理器 -->
+<!-- VS Code command handler -->
 <extension point="org.eclipse.jdt.ls.core.delegateCommandHandler">
     <delegateCommandHandler id="bazel-jdt">
         <command id="bazel-jdt.importProject"/>
@@ -794,7 +794,7 @@ flowchart TD
     </delegateCommandHandler>
 </extension>
 
-<!-- 项目 Nature -->
+<!-- Project Nature -->
 <extension point="org.eclipse.core.resources.natures">
     <runtime>
         <run class="com.bazel.jdt.BazelNature"/>

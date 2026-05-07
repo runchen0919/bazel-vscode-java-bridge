@@ -1,0 +1,81 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "npm",
+            "script": "watch",
+            "path": "bazel-jdt-bridge/vscode-extension",
+            "group": "build",
+            "problemMatcher": "$esbuild-watch",
+            "isBackground": true,
+            "label": "npm: watch",
+            "detail": "esbuild watch mode — auto-rebuild on TS changes"
+        },
+        {
+            "type": "npm",
+            "script": "build",
+            "path": "bazel-jdt-bridge/vscode-extension",
+            "group": "build",
+            "problemMatcher": [],
+            "label": "npm: build",
+            "detail": "esbuild one-shot bundle"
+        },
+        {
+            "type": "shell",
+            "label": "cargo: build",
+            "command": "cargo",
+            "args": [
+                "build",
+                "-p",
+                "bazel-jdt-core",
+                "--release"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/bazel-jdt-bridge"
+            },
+            "group": "build",
+            "problemMatcher": "$rustc"
+        },
+        {
+            "type": "shell",
+            "label": "cargo: test",
+            "command": "cargo",
+            "args": [
+                "test",
+                "--workspace"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/bazel-jdt-bridge"
+            },
+            "group": "test",
+            "problemMatcher": "$rustc"
+        },
+        {
+            "type": "shell",
+            "label": "mvn: compile",
+            "command": "mvn",
+            "args": [
+                "compile"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/bazel-jdt-bridge/java-bridge"
+            },
+            "group": "build",
+            "problemMatcher": []
+        },
+        {
+            "type": "shell",
+            "label": "mvn: test",
+            "command": "mvn",
+            "args": [
+                "test",
+                "-Djava.library.path=../target/release"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/bazel-jdt-bridge/java-bridge"
+            },
+            "group": "test",
+            "problemMatcher": []
+        }
+    ]
+}

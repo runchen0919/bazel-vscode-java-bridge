@@ -1,0 +1,32 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Run Extension",
+            "type": "extensionHost",
+            "request": "launch",
+            "args": [
+                "--extensionDevelopmentPath=${workspaceFolder}/vscode-extension"
+            ],
+            "outFiles": [
+                "${workspaceFolder}/vscode-extension/dist/**/*.js"
+            ],
+            "preLaunchTask": "npm: build"
+        },
+        {
+            "name": "E2E Tests",
+            "type": "extensionHost",
+            "request": "launch",
+            "runtimeExecutable": "${execPath}",
+            "args": [
+                "${workspaceFolder}/../../examples/simple-java-project",
+                "--extensionDevelopmentPath=${workspaceFolder}/vscode-extension",
+                "--extensionTestsPath=${workspaceFolder}/tests/e2e/out/suite"
+            ],
+            "outFiles": [
+                "${workspaceFolder}/tests/e2e/out/**/*.js"
+            ],
+            "preLaunchTask": "npm: build-tests"
+        }
+    ]
+}

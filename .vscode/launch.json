@@ -1,0 +1,54 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Run Extension with Bazel Workspace",
+            "type": "extensionHost",
+            "request": "launch",
+            "args": [
+                "--extensionDevelopmentPath=${workspaceFolder}/bazel-jdt-bridge/vscode-extension",
+                "${input:bazelWorkspacePath}"
+            ],
+            "outFiles": [
+                "${workspaceFolder}/bazel-jdt-bridge/vscode-extension/dist/**/*.js"
+            ],
+            "preLaunchTask": "npm: watch"
+        },
+        {
+            "name": "Extension Tests",
+            "type": "extensionHost",
+            "request": "launch",
+            "args": [
+                "--extensionDevelopmentPath=${workspaceFolder}/bazel-jdt-bridge/vscode-extension",
+                "--extensionTestsPath=${workspaceFolder}/bazel-jdt-bridge/vscode-extension/dist/test/suite/index"
+            ],
+            "outFiles": [
+                "${workspaceFolder}/bazel-jdt-bridge/vscode-extension/dist/**/*.js"
+            ],
+            "preLaunchTask": "npm: watch"
+        },
+        {
+            "name": "Attach to JDT.LS (Java)",
+            "type": "java",
+            "request": "attach",
+            "hostName": "localhost",
+            "port": 1045
+        }
+
+    ],
+    "compounds": [
+        {
+            "name": "Extension + Attach JDT.LS",
+            "configurations": ["Run Extension with Bazel Workspace", "Attach to JDT.LS (Java)"],
+            "stopAll": true
+        }
+    ],
+    "inputs": [
+        {
+            "id": "bazelWorkspacePath",
+            "type": "promptString",
+            "description": "Path to a Bazel workspace folder for testing",
+            "default": "/home/chenrun/workspace/bazel-workspace/bazel-vscode-java-bridge/examples/simple-java-project"
+        }
+    ]
+}

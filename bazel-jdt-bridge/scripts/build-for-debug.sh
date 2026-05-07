@@ -154,6 +154,10 @@ if [[ "$SKIP_RUST" == false ]]; then
 
     os="$(uname -s | tr '[:upper:]' '[:lower:]')"
     arch="$(uname -m)"
+    # Normalize arch to match Java's os.arch (PlatformDetector expects "aarch64", not "arm64")
+    if [[ "$arch" == "arm64" ]]; then
+        arch="aarch64"
+    fi
     case "$os" in
         linux)
             platform_dir="linux-$arch"

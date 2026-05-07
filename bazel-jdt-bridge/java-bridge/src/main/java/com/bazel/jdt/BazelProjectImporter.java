@@ -52,15 +52,21 @@ public class BazelProjectImporter extends AbstractProjectImporter {
         }
 
         String workspacePath = rootFolder.getAbsolutePath();
-        String bazelPath = "bazel";
         String cacheDir = BazelCommandHandler.DEFAULT_CACHE_DIR;
+
+        String[] scopePatterns = null;
+        BazelProjectView projectView = BazelProjectView.parse(rootFolder);
+
+        String bazelPath = "bazel";
+        if (projectView != null && !projectView.getBazelBinary().isEmpty()) {
+            bazelPath = projectView.getBazelBinary();
+            LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                "Using custom bazel binary from .bazelproject: " + bazelPath));
+        }
 
         bridge.initialize(workspacePath, bazelPath, cacheDir);
         LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
             "Importing Bazel workspace: " + workspacePath));
-
-        String[] scopePatterns = null;
-        BazelProjectView projectView = BazelProjectView.parse(rootFolder);
         if (projectView != null && projectView.hasScope()) {
             java.util.List<String> patterns = projectView.getScopePatterns();
             scopePatterns = patterns.toArray(new String[0]);

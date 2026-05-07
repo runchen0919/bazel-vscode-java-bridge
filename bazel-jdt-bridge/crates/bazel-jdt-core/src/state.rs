@@ -295,27 +295,13 @@ impl BazelJdtState {
         true
     }
 
-    /// Run aspect build for the given targets.
+    /// Run aspect build for the given targets (sync path via system()).
     fn run_aspect_build(
         &self,
         targets: &[String],
     ) -> Result<Vec<bazel_aspect::TargetIdeInfo>, String> {
-        let mut shutdown_rx = self.shutdown_signal();
-        self.runtime.block_on(async {
-            tokio::select! {
-                result = tokio::time::timeout(
-                    self.aspect_timeout,
-                    self.invoker.resolve_full_classpath_with_flags(targets, None),
-                ) => {
-                    result.map_err(|_| {
-                        format!("Aspect build timed out after {}s", self.aspect_timeout.as_secs())
-                    })?
-                    .map_err(|e| format!("Aspect build failed: {}", e))
-                }
-                _ = shutdown_rx.changed() => {
-                    Err("Operation cancelled: shutdown requested".to_string())
-                }
-            }
-        })
+        self.invoker
+            .resolve_full_classpath_sync(targets, None)
+            .map_err(|e| format!("Aspect build failed: {}", e))
     }
 }

@@ -56,3 +56,6 @@ SPEC-KIT-GUIDE.md
 !bazel-jdt-bridge/java-bridge/src/main/resources/native/**/*.dll
 
 .claude
+.omc
+
+.java-version

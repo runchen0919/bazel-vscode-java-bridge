@@ -48,7 +48,7 @@
             "id": "bazelWorkspacePath",
             "type": "promptString",
             "description": "Path to a Bazel workspace folder for testing",
-            "default": "/home/chenrun/workspace/bazel-workspace/bazel-vscode-java-bridge/examples/simple-java-project"
+            "default": "${workspaceFolder}/examples/simple-java-project"
         }
     ]
 }

@@ -105,6 +105,13 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeInitialize(
     bazel_path: JString,
     cache_dir: JString,
 ) -> jlong {
+    // Initialize stderr logger (controlled via RUST_LOG env var, default=warn).
+    // try_init is idempotent — safe if called multiple times.
+    let _ = env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("warn"),
+    )
+    .try_init();
+
     let workspace: String = match env.get_string(&workspace_path) {
         Ok(s) => s.into(),
         Err(_) => {
@@ -305,31 +312,23 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeDiscoverTargets(
     let build_flags_vec = parse_java_string_array(&mut env, &build_flags);
     let build_flags_ref: Option<&[String]> = build_flags_vec.as_deref();
 
-    let mut shutdown_rx = state.shutdown_signal();
-    let targets = match state.runtime.block_on(async {
-        tokio::select! {
-            result = tokio::time::timeout(state.query_timeout, state.invoker.discover_java_targets(scope_ref, build_flags_ref)) => {
-                match result {
-                    Ok(Ok(t)) => Ok(t),
-                    Ok(Err(e)) => Err(format!(
-                        "Failed to discover targets: {}. Try running 'bazel query //...:*' in the workspace to verify Java targets exist.",
-                        e
-                    )),
-                    Err(_) => Err(format!(
-                        "Bazel query timed out after {}s. Try running 'bazel query //...:*' manually to check performance.",
-                        state.query_timeout.as_secs()
-                    )),
-                }
-            }
-            _ = shutdown_rx.changed() => {
-                Err("Operation cancelled: shutdown requested".to_string())
-            }
-        }
-    }) {
+    // Call bazel synchronously via C system() on the JNI thread.
+    // The JVM has 11k+ open fds; Rust's Command and tokio's reactor trigger EBADF.
+    // C system() does a bare fork+exec without fd manipulation, sidestepping this.
+    log::info!(
+        "nativeDiscoverTargets: sync path, workspace={:?}",
+        state.workspace_root
+    );
+    let targets = match state.invoker.discover_java_targets_sync(scope_ref, build_flags_ref) {
         Ok(t) => t,
         Err(e) => {
+            let msg = format!(
+                "Failed to discover targets: {}. Try running 'bazel query //...:*' in the workspace to verify Java targets exist.",
+                e
+            );
+            log::error!("nativeDiscoverTargets error: {}", msg);
             state.set_sync_state(SyncState::Error);
-            let _ = env.throw_new("java/lang/RuntimeException", e);
+            let _ = env.throw_new("java/lang/RuntimeException", msg);
             return std::ptr::null_mut();
         }
     };
@@ -349,49 +348,23 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeDiscoverTargets(
     }
 
     // Batch aspect build: populate JAR data for ALL targets in a single Bazel invocation.
-    // This ensures subsequent nativeComputeClasspath() calls hit the fast path (graph data).
-    // If this fails, individual targets will fall through to per-target aspect builds.
+    // Uses sync path (system()) to avoid EBADF with 11k+ open JVM file descriptors.
     {
         let aspect_targets = targets.clone();
-        let mut batch_rx = state.shutdown_signal();
-        let batch_result = state.runtime.block_on(async {
-            tokio::select! {
-                result = tokio::time::timeout(
-                    state.aspect_timeout,
-                    state.invoker.resolve_full_classpath_with_flags(&aspect_targets, build_flags_ref),
-                ) => {
-                    match result {
-                        Ok(Ok(results)) => Ok(results),
-                        Ok(Err(e)) => {
-                            log::warn!("Batch aspect build failed: {}. Per-target resolution will be used.", e);
-                            Err(())
-                        }
-                        Err(_) => {
-                            log::warn!(
-                                "Batch aspect build timed out after {}s. Per-target resolution will be used.",
-                                state.aspect_timeout.as_secs()
-                            );
-                            Err(())
-                        }
-                    }
-                }
-                _ = batch_rx.changed() => {
-                    log::info!("Batch aspect build cancelled: shutdown requested");
-                    Err(())
-                }
+        log::info!("Starting batch aspect build for {} targets", aspect_targets.len());
+        match state.invoker.resolve_full_classpath_sync(&aspect_targets, build_flags_ref) {
+            Ok(aspect_results) => {
+                let mut graph = state.graph.lock().unwrap_or_else(|e| e.into_inner());
+                graph.populate_from_aspects(&aspect_results, &state.workspace_root);
+                log::info!(
+                    "Batch aspect build: {} targets, {} with JARs",
+                    aspect_results.len(),
+                    aspect_results.iter().filter(|r| r.java_info.is_some()).count()
+                );
             }
-        });
-        if let Ok(aspect_results) = batch_result {
-            let mut graph = state.graph.lock().unwrap_or_else(|e| e.into_inner());
-            graph.populate_from_aspects(&aspect_results, &state.workspace_root);
-            log::info!(
-                "Populated graph with batch aspect data: {} targets, {} with JARs",
-                aspect_results.len(),
-                aspect_results
-                    .iter()
-                    .filter(|r| r.java_info.is_some())
-                    .count()
-            );
+            Err(e) => {
+                log::warn!("Batch aspect build failed: {}. Per-target resolution will be used.", e);
+            }
         }
     }
 
@@ -484,7 +457,7 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeComputeClasspath(
         }
     }
 
-    match run_full_resolution(state, &label, state.shutdown_signal(), build_flags_ref) {
+    match run_full_resolution(state, &label, build_flags_ref) {
         Ok(resolved) => {
             let entries = resolved.to_pipe_delimited_entries();
             log::debug!(
@@ -687,50 +660,29 @@ fn infer_target_kind(label: &str) -> TargetKind {
 fn run_full_resolution(
     state: &BazelJdtState,
     target_label: &str,
-    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     build_flags: Option<&[String]>,
 ) -> Result<bazel_graph::ComputedClasspath, String> {
     let targets = vec![target_label.to_string()];
 
-    let aspect_results = state.runtime.block_on(async {
-        tokio::select! {
-            result = tokio::time::timeout(
-                state.aspect_timeout,
-                state.invoker.resolve_full_classpath_with_flags(&targets, build_flags),
-            ) => {
-                result
-                .map_err(|_| {
-                    format!(
-                        "Bazel aspect build timed out after {}s for target '{}'",
-                        state.aspect_timeout.as_secs(),
-                        target_label
-                    )
-                })?
-                .map_err(|e| {
-                    let err_str = format!("{}", e);
-                    let is_aspect_not_found = (err_str.contains("repository")
-                        && err_str.contains("not found"))
-                        || (err_str.contains("package")
-                            && err_str.contains("not found"));
-                    if is_aspect_not_found {
-                        format!(
-                            "Bazel aspect build failed: the IDE aspect files are missing. \
-                             Try running 'Bazel: Import Project' to re-extract them. Details: {}",
-                            err_str
-                        )
-                    } else {
-                        format!("Bazel aspect build failed: {}", err_str)
-                    }
-                })
+    log::info!("run_full_resolution for '{}'", target_label);
+    let aspect_results = state
+        .invoker
+        .resolve_full_classpath_sync(&targets, build_flags)
+        .map_err(|e| {
+            let err_str = format!("{}", e);
+            let is_aspect_not_found = (err_str.contains("repository")
+                && err_str.contains("not found"))
+                || (err_str.contains("package") && err_str.contains("not found"));
+            if is_aspect_not_found {
+                format!(
+                    "Bazel aspect build failed: the IDE aspect files are missing. \
+                     Try running 'Bazel: Import Project' to re-extract them. Details: {}",
+                    err_str
+                )
+            } else {
+                format!("Bazel aspect build failed: {}", err_str)
             }
-            _ = shutdown_rx.changed() => {
-                Err(format!(
-                    "Operation cancelled during aspect build for '{}'",
-                    target_label
-                ))
-            }
-        }
-    })?;
+        })?;
 
     if aspect_results.is_empty() {
         return Err(format!(

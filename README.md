@@ -1,42 +1,42 @@
 # Bazel JDT Bridge
 
-## 项目简介
+## Overview
 
-Bazel JDT Bridge 是一个 VS Code 扩展，为 Bazel 工作空间中的 Java 开发提供完整的 IDE 支持。
+Bazel JDT Bridge is a VS Code extension that provides full IDE support for Java development in Bazel workspaces.
 
-Bazel 是一个高性能构建系统，但它在 Java IDE 集成方面存在明显短板。开发者打开一个 Bazel 工作空间后，面对的是没有代码补全、没有跳转定义、没有依赖提示的"裸"编辑器。Bazel JDT Bridge 填补了这个空白，它将 Bazel 的构建信息桥接到 Eclipse JDT Language Server，让 VS Code 能像对待 Maven/Gradle 项目一样处理 Bazel Java 项目。
+Bazel is a high-performance build system, but it has significant shortcomings in Java IDE integration. When developers open a Bazel workspace, they face a "bare" editor with no code completion, no go-to-definition, and no dependency hints. Bazel JDT Bridge fills this gap by bridging Bazel's build information to the Eclipse JDT Language Server, allowing VS Code to handle Bazel Java projects just like Maven/Gradle projects.
 
-**核心功能：**
+**Core Features:**
 
-- **代码补全**：基于完整的 classpath 信息，提供准确的类名、方法、字段补全
-- **代码导航**：支持跳转到定义 (Go to Definition)、查找引用 (Find References) 等操作
-- **依赖解析**：通过 Bazel CLI 和 BUILD 文件解析，构建完整的 Java 依赖图
-- **实时同步**：监听 BUILD 文件变更，自动触发增量同步，保持 classpath 与工作空间一致
-- **智能缓存**：基于 redb 的持久化 KV 存储，区分快速路径和慢速路径，减少不必要的 Bazel 调用
+- **Code Completion**: Accurate class name, method, and field completion based on full classpath information
+- **Code Navigation**: Support for Go to Definition, Find References, and other navigation operations
+- **Dependency Resolution**: Build a complete Java dependency graph through Bazel CLI and BUILD file parsing
+- **Real-time Sync**: Monitor BUILD file changes, automatically trigger incremental sync, and keep classpath consistent with the workspace
+- **Smart Caching**: Persistent KV storage based on redb, distinguishing between fast and slow paths to reduce unnecessary Bazel invocations
 
-**项目目录结构：**
+**Project Directory Structure:**
 
 ```
 spec-kit-project/
-├── bazel-jdt-bridge/         # 主应用 (Rust + Java + TypeScript)
-│   ├── crates/               # 6 个 Rust workspace crates
-│   │   ├── bazel-parser/     # Starlark/BUILD 文件解析
-│   │   ├── bazel-aspect/     # Bazel aspect text_proto 解析
-│   │   ├── bazel-query/      # Bazel CLI 异步查询
-│   │   ├── bazel-graph/      # 依赖图 + classpath 计算
-│   │   ├── bazel-cache/      # redb 持久化 KV 缓存
-│   │   └── bazel-jdt-core/   # JNI 桥接 (cdylib)
+├── bazel-jdt-bridge/         # Main application (Rust + Java + TypeScript)
+│   ├── crates/               # 6 Rust workspace crates
+│   │   ├── bazel-parser/     # Starlark/BUILD file parsing
+│   │   ├── bazel-aspect/     # Bazel aspect text_proto parsing
+│   │   ├── bazel-query/      # Bazel CLI async query
+│   │   ├── bazel-graph/      # Dependency graph + classpath computation
+│   │   ├── bazel-cache/      # redb persistent KV cache
+│   │   └── bazel-jdt-core/   # JNI bridge (cdylib)
 │   ├── java-bridge/          # Eclipse JDT.LS OSGi Bundle (Maven, Java 17)
-│   ├── vscode-extension/     # VS Code 扩展 UI (TypeScript, esbuild)
-│   └── scripts/              # 跨平台构建和打包脚本
-├── .claude/commands/         # SpecKit AI 辅助开发命令
-├── .opencode/                # OpenCode AI 配置
-└── openspec/                 # Spec 驱动开发配置
+│   ├── vscode-extension/     # VS Code extension UI (TypeScript, esbuild)
+│   └── scripts/              # Cross-platform build and packaging scripts
+├── .claude/commands/         # SpecKit AI-assisted development commands
+├── .opencode/                # OpenCode AI configuration
+└── openspec/                 # Spec-driven development configuration
 ```
 
-## 架构设计
+## Architecture
 
-### 四层架构
+### Four-Layer Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -68,224 +68,224 @@ spec-kit-project/
 └─────────────────────────────────────────────────────────┘
 ```
 
-**TypeScript Shell** 是最上层，负责 VS Code 集成。它注册 3 个命令 (import/sync/cleanCache)，管理状态栏轮询，读取用户配置。这一层不包含任何业务逻辑，所有请求通过 `java.execute.workspaceCommand` 转发给 Java 层。
+**TypeScript Shell** is the top layer, responsible for VS Code integration. It registers 3 commands (import/sync/cleanCache), manages status bar polling, and reads user configuration. This layer contains no business logic — all requests are forwarded to the Java layer via `java.execute.workspaceCommand`.
 
-**Java OSGi Bundle** 是中间桥梁，对接 Eclipse JDT.LS 的扩展点体系。它管理 JNI 生命周期，在 JDT 的 `IClasspathContainer` 模型和 Rust 的管道分隔格式之间做翻译。共 7 个 Java 类，采用 OSGi 单例模式运行。
+**Java OSGi Bundle** is the middle bridge, interfacing with Eclipse JDT.LS's extension point system. It manages the JNI lifecycle and translates between JDT's `IClasspathContainer` model and Rust's pipe-delimited format. It consists of 7 Java classes running in OSGi singleton mode.
 
-**Rust Core Engine** 是整个项目的核心，承载全部业务逻辑：BUILD 文件解析、Bazel CLI 调用、依赖图构建、classpath 计算、持久化缓存、文件变更监听。由 6 个 crate 组成。
+**Rust Core Engine** is the heart of the project, carrying all business logic: BUILD file parsing, Bazel CLI invocation, dependency graph construction, classpath computation, persistent caching, and file change monitoring. It is composed of 6 crates.
 
-**Bazel CLI** 是最底层，作为构建目标和产物路径的 source of truth。
+**Bazel CLI** is the bottom layer, serving as the source of truth for build targets and artifact paths.
 
-### 端到端数据流
+### End-to-End Data Flow
 
-1. VS Code 打开工作空间，JDT.LS 检测到 `WORKSPACE` 文件，加载 OSGi bundle
-2. `BazelProjectImporter` 触发导入流程，调用 JNI `nativeInitialize()` 创建 `BazelJdtState`
-3. `nativeDiscoverTargets()` 执行 `bazel query` 获取所有 Java target 标签，返回 `String[]`
-4. 对每个 target 调用 `nativeComputeClasspath()`，走以下解析链路：
-   - **快速路径**：检查 redb 缓存。命中则直接返回，不调用 Bazel
-   - **中速路径**：缓存未命中时，通过 BUILD 文件解析 + 依赖图 BFS (petgraph) 计算 classpath
-   - **慢速路径**：图信息不足时，执行 `bazel build --aspects` 触发 IntelliJ aspects 做完整解析，然后缓存结果
-5. Java 侧将管道分隔的 classpath 条目解析为 JDT 的 `IClasspathEntry[]`，JDT.LS 据此提供代码补全和导航
+1. VS Code opens a workspace, JDT.LS detects a `WORKSPACE` file, and loads the OSGi bundle
+2. `BazelProjectImporter` triggers the import flow, calling JNI `nativeInitialize()` to create a `BazelJdtState`
+3. `nativeDiscoverTargets()` executes `bazel query` to get all Java target labels, returning `String[]`
+4. For each target, `nativeComputeClasspath()` is called, following this resolution chain:
+   - **Fast Path**: Check the redb cache. Return immediately on hit without invoking Bazel
+   - **Medium Path**: On cache miss, compute classpath via BUILD file parsing + dependency graph BFS (petgraph)
+   - **Slow Path**: When graph data is insufficient, execute `bazel build --aspects` to trigger IntelliJ aspects for full resolution, then cache the result
+5. The Java side parses pipe-delimited classpath entries into JDT's `IClasspathEntry[]`, which JDT.LS uses to provide code completion and navigation
 
-Classpath 数据格式 (Rust 到 Java)：
+Classpath data format (Rust to Java):
 
 ```
 TYPE|path|sourceAttachmentPath|isTest|isExported|accessRules
 ```
 
-其中 TYPE 取值为 `LIB`、`PROJ` 或 `SRC`。
+Where TYPE is `LIB`, `PROJ`, or `SRC`.
 
-### Rust Crate 依赖关系
+### Rust Crate Dependencies
 
 ```
-bazel-jdt-core (cdylib, JNI 入口)
-├── bazel-parser (Starlark 解析, starlark_syntax)
-├── bazel-aspect (text_proto 解析)
-├── bazel-query (异步 Bazel CLI, tokio)
+bazel-jdt-core (cdylib, JNI entry point)
+├── bazel-parser (Starlark parsing, starlark_syntax)
+├── bazel-aspect (text_proto parsing)
+├── bazel-query (async Bazel CLI, tokio)
 │   └── bazel-aspect
-├── bazel-graph (依赖图 + classpath, petgraph)
+├── bazel-graph (dependency graph + classpath, petgraph)
 │   └── bazel-aspect
-└── bazel-cache (redb 持久化存储)
+└── bazel-cache (redb persistent storage)
 ```
 
-各 crate 职责：
+Crate responsibilities:
 
-| Crate | 职责 | 关键依赖 |
-|-------|------|----------|
-| `bazel-parser` | 解析 Starlark 语法和 BUILD 文件，提取 Java 规则 | `starlark_syntax` |
-| `bazel-aspect` | 解析 Bazel aspect 输出的 text_proto 格式 | `serde`, `serde_json` |
-| `bazel-query` | 异步调用 `bazel query` 命令，解析输出 | `tokio` |
-| `bazel-graph` | 构建 petgraph 依赖图，执行 BFS 计算 classpath | `petgraph`, `bazel-aspect` |
-| `bazel-cache` | redb 持久化 KV 存储，管理缓存读写和失效 | `redb`, `sha2` |
-| `bazel-jdt-core` | JNI FFI 边界、全局状态、文件监听、变更检测 | 以上全部 + `jni`, `notify` |
+| Crate | Responsibility | Key Dependencies |
+|-------|---------------|------------------|
+| `bazel-parser` | Parse Starlark syntax and BUILD files, extract Java rules | `starlark_syntax` |
+| `bazel-aspect` | Parse Bazel aspect output in text_proto format | `serde`, `serde_json` |
+| `bazel-query` | Asynchronously invoke `bazel query` commands and parse output | `tokio` |
+| `bazel-graph` | Build petgraph dependency graph, compute classpath via BFS | `petgraph`, `bazel-aspect` |
+| `bazel-cache` | Persistent KV storage with redb, manage cache reads/writes and invalidation | `redb`, `sha2` |
+| `bazel-jdt-core` | JNI FFI boundary, global state, file watching, change detection | All of the above + `jni`, `notify` |
 
-### 缓存架构
+### Cache Architecture
 
-缓存基于 redb（Rust ACID KV 数据库），维护两张表：
+The cache is built on redb (a Rust ACID KV database) and maintains two tables:
 
-- **classpath 表**：以 target label 为 key，序列化的 classpath JSON 为 value
-- **build_hash 表**：以 BUILD 文件路径为 key，SHA-256 哈希为 value
+- **classpath table**: target label as key, serialized classpath JSON as value
+- **build_hash table**: BUILD file path as key, SHA-256 hash as value
 
-缓存失效策略是按 target 粒度进行的。当文件监听器检测到 BUILD 文件变更时，比较哈希值判断哪些 target 受影响，只重新计算受影响的 classpath。用户也可以通过 `Bazel: Clean Cache` 命令手动清空全部缓存。
+Cache invalidation operates at target granularity. When the file watcher detects a BUILD file change, it compares hashes to determine which targets are affected and only recomputes classpaths for those targets. Users can also manually clear all caches via the `Bazel: Clean Cache` command.
 
-## 环境配置
+## Environment Setup
 
-### 前置依赖
+### Prerequisites
 
-| 工具 | 最低版本 | 用途 |
-|------|----------|------|
-| Rust (cargo) | 1.75+ | 构建原生引擎 |
-| Java JDK | 17 | 编译 OSGi Bundle |
-| Maven | 3.8+ | Java 构建管理 |
-| Node.js | 18+ | 构建 VS Code 扩展 |
-| npm | 9+ | JS 依赖管理 |
+| Tool | Minimum Version | Purpose |
+|------|----------------|---------|
+| Rust (cargo) | 1.75+ | Build the native engine |
+| Java JDK | 17 | Compile the OSGi Bundle |
+| Maven | 3.8+ | Java build management |
+| Node.js | 18+ | Build the VS Code extension |
+| npm | 9+ | JS dependency management |
 
-验证当前环境：
+Verify your environment:
 
 ```bash
-rustc --version    # 需要 >= 1.75
-java -version      # 需要 JDK 17
-mvn -version       # 需要 >= 3.8
-node --version     # 需要 >= 18
-npm --version      # 需要 >= 9
+rustc --version    # Requires >= 1.75
+java -version      # Requires JDK 17
+mvn -version       # Requires >= 3.8
+node --version     # Requires >= 18
+npm --version      # Requires >= 9
 ```
 
-### 跨平台编译依赖（可选）
+### Cross-Platform Compilation Dependencies (Optional)
 
-如果需要为非当前宿主平台编译原生库，需要安装以下工具：
+If you need to compile native libraries for platforms other than your host, install the following tools:
 
 ```bash
-# 安装 Zig 工具链和 cargo-zigbuild
+# Install Zig toolchain and cargo-zigbuild
 pip install ziglang cargo-zigbuild
 ```
 
-如果只构建当前平台，用标准 `cargo` 即可，不需要这些额外依赖。
+If you only need to build for your current platform, standard `cargo` is sufficient — no additional dependencies required.
 
-## 构建与打包
+## Build & Package
 
-### 本地开发构建
+### Local Development Build
 
-按以下顺序执行，构建当前平台版本：
+Execute in the following order to build for your current platform:
 
 ```bash
-# 1. 构建 Rust 原生库
+# 1. Build the Rust native library
 cd bazel-jdt-bridge
 cargo build -p bazel-jdt-core --release
 
-# 2. 构建 Java OSGi Bundle
+# 2. Build the Java OSGi Bundle
 cd java-bridge
 mvn clean package -DskipTests
 
-# 3. 构建 VS Code 扩展
+# 3. Build the VS Code extension
 cd ../vscode-extension
 npm install
 npm run build
 ```
 
-构建顺序很重要：Rust 原生库必须在 Java 测试之前构建完成，因为 Java 测试通过 JNI 加载 `.so`/`.dylib`/`.dll`。
+Build order matters: the Rust native library must be built before Java tests can run, because Java tests load `.so`/`.dylib`/`.dll` via JNI.
 
-### 测试
+### Testing
 
 ```bash
-# Rust 单元测试 + 集成测试 (38 个)
+# Rust unit tests + integration tests (38 tests)
 cd bazel-jdt-bridge
 cargo test --workspace
 
-# Java 测试 (需要先构建 Rust 原生库)
+# Java tests (requires Rust native library to be built first)
 cd java-bridge
 mvn test -Djava.library.path=../target/release
 
-# Rust 代码检查
+# Rust linting
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-### E2E 测试
+### E2E Tests
 
-E2E 测试在真实 VSCode Extension Development Host (EDH) 中运行，验证从扩展激活到代码补全的完整流程。
+E2E tests run in a real VS Code Extension Development Host (EDH), validating the complete flow from extension activation to code completion.
 
-**前置条件：** Rust 原生库 + Java OSGi Bundle + TypeScript 必须已构建完成。
+**Prerequisites:** Rust native library + Java OSGi Bundle + TypeScript must all be built.
 
 ```bash
-# 1. 先完成完整构建
+# 1. Complete the full build first
 cd bazel-jdt-bridge
 cargo build -p bazel-jdt-core --release
 cd java-bridge && mvn clean package -DskipTests
 cd ../vscode-extension && npm install && npm run build
 
-# 2. 运行 E2E 测试 (默认使用 simple-java-project)
+# 2. Run E2E tests (defaults to simple-java-project)
 cd bazel-jdt-bridge/vscode-extension
 npm run e2e
 
-# 3. 运行全量 E2E 测试 (所有 3 个 workspace)
+# 3. Run full E2E tests (all 3 workspaces)
 npm run e2e:full
 
-# 4. 测试指定 workspace
+# 4. Test a specific workspace
 TEST_WORKSPACE=maven-deps-project npm run e2e
 TEST_WORKSPACE=multi-module-project npm run e2e
 ```
 
-**测试矩阵：**
+**Test Matrix:**
 
-| Workspace | 验证内容 |
-|-----------|---------|
-| `simple-java-project` | 扩展激活、基本补全、Greeter 类解析 |
-| `maven-deps-project` | 外部依赖补全 (Guava、JUnit) |
-| `multi-module-project` | exports 传递依赖、resources |
+| Workspace | What It Verifies |
+|-----------|-----------------|
+| `simple-java-project` | Extension activation, basic completion, Greeter class resolution |
+| `maven-deps-project` | External dependency completion (Guava, JUnit) |
+| `multi-module-project` | Transitive dependency exports, resources |
 
-**分层测试策略：**
+**Layered Testing Strategy:**
 
-| 改动类型 | 运行命令 | 预计时间 |
-|---------|---------|---------|
-| Rust 改动 | `cargo test --workspace` | ~5s |
-| Java 改动 | `mvn test` | ~10s |
-| TS 改动 | `npm run e2e` | ~2min |
+| Change Type | Command to Run | Estimated Time |
+|------------|---------------|----------------|
+| Rust changes | `cargo test --workspace` | ~5s |
+| Java changes | `mvn test` | ~10s |
+| TS changes | `npm run e2e` | ~2min |
 
-### 跨平台发布构建
+### Cross-Platform Release Build
 
 ```bash
 cd bazel-jdt-bridge
 
-# 跨平台编译 5 个目标平台的原生库
+# Cross-compile native libraries for 5 target platforms
 ./scripts/build-native.sh
 
-# 打包为 VSIX (包含所有平台原生库)
+# Package as VSIX (includes all platform native libraries)
 ./scripts/package-extension.sh
 ```
 
-支持的目标平台：
+Supported target platforms:
 
-| 目标平台 | 产物 |
-|----------|------|
+| Target Platform | Artifact |
+|----------------|----------|
 | `x86_64-unknown-linux-gnu` | `libbazel_jdt_core.so` |
 | `aarch64-unknown-linux-gnu` | `libbazel_jdt_core.so` |
 | `x86_64-apple-darwin` | `libbazel_jdt_core.dylib` |
 | `aarch64-apple-darwin` | `libbazel_jdt_core.dylib` |
 | `x86_64-pc-windows-gnu` | `bazel_jdt_core.dll` |
 
-### 构建产物链
+### Build Artifact Chain
 
 ```
 Rust (cdylib)  →  Java (OSGi JAR)  →  TypeScript (esbuild bundle)  →  VSIX
 .so/.dylib/.dll    com.bazel.jdt.jar    dist/extension.js              bazel-jdt-bridge-0.1.0.vsix
 ```
 
-原生库通过 OSGi 的 `Bundle-NativeCode` 声明打包进 JAR，按 `native/<platform>/` 目录结构组织。`package-extension.sh` 脚本负责将 JAR 放入 VS Code 扩展的 `server/` 目录，然后用 `@vscode/vsce` 打包成 VSIX。
+Native libraries are packaged into the JAR via OSGi's `Bundle-NativeCode` declaration, organized in a `native/<platform>/` directory structure. The `package-extension.sh` script places the JAR into the VS Code extension's `server/` directory, then packages it into a VSIX using `@vscode/vsce`.
 
-### 安装扩展
+### Installing the Extension
 
 ```bash
 code --install-extension build/bazel-jdt-bridge-0.1.0.vsix
 ```
 
-安装后，扩展会在打开包含 `WORKSPACE` 或 `WORKSPACE.bazel` 文件的 Java 项目时自动激活。激活后可通过命令面板执行以下命令：
+After installation, the extension automatically activates when opening a Java project containing a `WORKSPACE` or `WORKSPACE.bazel` file. Once activated, the following commands are available via the Command Palette:
 
-- `Bazel: Import Project`：导入 Bazel 工作空间，构建完整的 classpath
-- `Bazel: Sync Project`：增量同步，更新已变更的依赖信息
-- `Bazel: Clean Cache`：清空缓存，强制下次全量重新计算
+- `Bazel: Import Project`: Import the Bazel workspace and build the full classpath
+- `Bazel: Sync Project`: Incremental sync to update changed dependency information
+- `Bazel: Clean Cache`: Clear the cache, forcing a full recomputation on the next request
 
-扩展提供了 3 个配置项（在 VS Code 设置中搜索 "Bazel JDT Bridge"）：
+The extension provides 3 configuration options (search for "Bazel JDT Bridge" in VS Code settings):
 
-- `bazel-jdt.bazelPath`：Bazel 可执行文件路径，默认 `bazel`
-- `bazel-jdt.syncOnSave`：保存 BUILD 文件时自动同步，默认开启
-- `bazel-jdt.cacheDir`：缓存目录，默认为空（使用系统临时目录）
+- `bazel-jdt.bazelPath`: Path to the Bazel executable, defaults to `bazel`
+- `bazel-jdt.syncOnSave`: Automatically sync when saving BUILD files, enabled by default
+- `bazel-jdt.cacheDir`: Cache directory, defaults to empty (uses system temp directory)

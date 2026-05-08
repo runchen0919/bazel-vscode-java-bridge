@@ -4,8 +4,13 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+import org.eclipse.core.resources.ResourcesPlugin;
+import org.eclipse.core.runtime.ILog;
 import org.eclipse.core.runtime.IPath;
+import org.eclipse.core.runtime.IStatus;
 import org.eclipse.core.runtime.Path;
+import org.eclipse.core.runtime.Platform;
+import org.eclipse.core.runtime.Status;
 import org.eclipse.jdt.core.IAccessRule;
 import org.eclipse.jdt.core.IClasspathAttribute;
 import org.eclipse.jdt.core.IClasspathContainer;
@@ -13,6 +18,7 @@ import org.eclipse.jdt.core.IClasspathEntry;
 import org.eclipse.jdt.core.JavaCore;
 
 public class BazelClasspathContainer implements IClasspathContainer {
+    private static final ILog LOG = Platform.getLog(BazelClasspathContainer.class);
     public static final IPath CONTAINER_PATH = Path.fromPortableString("com.bazel.jdt.BAZEL_CONTAINER");
     private static final String DESCRIPTION = "Bazel Dependencies";
 
@@ -21,16 +27,23 @@ public class BazelClasspathContainer implements IClasspathContainer {
     private final IClasspathEntry[] entries;
     private final List<String> testSourcePatterns;
     private final String resolutionMode;
+    private final String ownerProjectName;
 
     public BazelClasspathContainer(String[] rawEntries) {
-        this(rawEntries, Collections.emptyList(), "transitive");
+        this(rawEntries, Collections.emptyList(), "transitive", null);
     }
 
     public BazelClasspathContainer(String[] rawEntries, List<String> testSourcePatterns) {
-        this(rawEntries, testSourcePatterns, "transitive");
+        this(rawEntries, testSourcePatterns, "transitive", null);
     }
 
     public BazelClasspathContainer(String[] rawEntries, List<String> testSourcePatterns, String resolutionMode) {
+        this(rawEntries, testSourcePatterns, resolutionMode, null);
+    }
+
+    public BazelClasspathContainer(String[] rawEntries, List<String> testSourcePatterns,
+            String resolutionMode, String ownerProjectName) {
+        this.ownerProjectName = ownerProjectName;
         this.resolutionMode = resolutionMode != null ? resolutionMode : "transitive";
         this.testSourcePatterns = testSourcePatterns != null ? testSourcePatterns : Collections.emptyList();
         List<IClasspathEntry> parsed = new ArrayList<>();
@@ -59,6 +72,11 @@ public class BazelClasspathContainer implements IClasspathContainer {
         switch (type) {
             case "LIB":
                 IPath jarPath = Path.fromPortableString(path);
+                if (!jarPath.toFile().exists()) {
+                    LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                        "Skipping non-existent JAR: " + path));
+                    return null;
+                }
                 IPath srcPath = sourcePath != null ? Path.fromPortableString(sourcePath) : null;
                 IAccessRule[] accessRules = parseAccessRules(accessRulesStr);
                 boolean matchesTestPattern = false;
@@ -89,7 +107,10 @@ public class BazelClasspathContainer implements IClasspathContainer {
                 if (path.startsWith("@@")) {
                     return null;
                 }
-                String projectName = extractPackageName(path);
+                String projectName = LabelUtils.toProjectName(extractPackageName(path));
+                if (ownerProjectName != null && projectName.equals(ownerProjectName)) {
+                    return null;
+                }
                 if ("optional".equals(resolutionMode)) {
                     IClasspathAttribute[] optionalAttrs = new IClasspathAttribute[]{
                         JavaCore.newClasspathAttribute(IClasspathAttribute.OPTIONAL, "true")
@@ -100,6 +121,9 @@ public class BazelClasspathContainer implements IClasspathContainer {
                         true,
                         optionalAttrs,
                         false);
+                }
+                if (!ResourcesPlugin.getWorkspace().getRoot().getProject(projectName).exists()) {
+                    return null;
                 }
                 return JavaCore.newProjectEntry(Path.fromPortableString("/" + projectName));
             case "SRC":

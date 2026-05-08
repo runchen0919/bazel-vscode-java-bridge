@@ -27,13 +27,18 @@ pub struct BuildFileWatcher {
 }
 
 impl BuildFileWatcher {
-    pub fn start(workspace_root: PathBuf, callback: ChangeCallback) -> Result<Self, WatcherError> {
+    pub fn start(
+        workspace_root: PathBuf,
+        watch_paths: Vec<PathBuf>,
+        callback: ChangeCallback,
+    ) -> Result<Self, WatcherError> {
         let (tx, rx) = std::sync::mpsc::channel::<notify_debouncer_full::DebounceEventResult>();
 
         let mut debouncer =
             notify_debouncer_full::new_debouncer(Duration::from_millis(500), None, tx)?;
 
-        if let Err(e) = debouncer.watch(&workspace_root, RecursiveMode::Recursive) {
+        // Watch workspace root non-recursively for WORKSPACE and .bazelproject changes
+        if let Err(e) = debouncer.watch(&workspace_root, RecursiveMode::NonRecursive) {
             if cfg!(target_os = "linux") {
                 log::warn!(
                     "File watcher failed (may need to increase fs.inotify.max_user_watches): {}",
@@ -42,6 +47,30 @@ impl BuildFileWatcher {
             }
             return Err(WatcherError::NotifyError(e));
         }
+
+        // Watch each user-selected directory recursively for BUILD file changes
+        for rel_path in &watch_paths {
+            let abs_path = workspace_root.join(rel_path);
+            if !abs_path.is_dir() {
+                log::warn!(
+                    "Watch path does not exist, skipping: {}",
+                    abs_path.display()
+                );
+                continue;
+            }
+            if let Err(e) = debouncer.watch(&abs_path, RecursiveMode::Recursive) {
+                log::warn!(
+                    "Failed to watch directory {}: {}",
+                    abs_path.display(),
+                    e
+                );
+            }
+        }
+
+        log::info!(
+            "File watcher started: {} user directories",
+            watch_paths.len()
+        );
 
         let running = Arc::new(AtomicBool::new(true));
         let running_clone = running.clone();
@@ -106,14 +135,28 @@ fn filter_build_file_events(result: notify_debouncer_full::DebounceEventResult) 
 
     for event in events {
         for path in &event.event.paths {
-            if is_build_file(path) && seen.insert(path.clone()) {
-                log::debug!("Detected change in build file: {}", path.display());
+            if is_watched_file(path) && seen.insert(path.clone()) {
+                log::debug!("Detected change in watched file: {}", path.display());
                 paths.push(path.clone());
             }
         }
     }
 
     paths
+}
+
+#[cfg(test)]
+fn is_bazel_output_dir(path: &Path) -> bool {
+    let name = match path.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n,
+        None => return false,
+    };
+    if !name.starts_with("bazel-") {
+        return false;
+    }
+    path.symlink_metadata()
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
 }
 
 pub fn is_build_file(path: &Path) -> bool {
@@ -128,6 +171,25 @@ pub fn is_build_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+pub fn is_watched_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| {
+            matches!(
+                name,
+                "BUILD" | "BUILD.bazel" | "WORKSPACE" | "WORKSPACE.bazel" | ".bazelproject"
+            )
+        })
+        .unwrap_or(false)
+}
+
+pub fn is_bazelproject_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name == ".bazelproject")
+        .unwrap_or(false)
+}
+
 impl Drop for BuildFileWatcher {
     fn drop(&mut self) {
         self.stop();
@@ -139,22 +201,60 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_is_build_file() {
-        assert!(is_build_file(Path::new("BUILD")));
-        assert!(is_build_file(Path::new("BUILD.bazel")));
-        assert!(is_build_file(Path::new("WORKSPACE")));
-        assert!(is_build_file(Path::new("WORKSPACE.bazel")));
-        assert!(is_build_file(Path::new("/some/path/BUILD")));
-        assert!(is_build_file(Path::new("/some/path/BUILD.bazel")));
+    fn test_is_watched_file() {
+        assert!(is_watched_file(Path::new("BUILD")));
+        assert!(is_watched_file(Path::new("BUILD.bazel")));
+        assert!(is_watched_file(Path::new("WORKSPACE")));
+        assert!(is_watched_file(Path::new("WORKSPACE.bazel")));
+        assert!(is_watched_file(Path::new("/some/path/BUILD")));
+        assert!(is_watched_file(Path::new("/some/path/BUILD.bazel")));
+        assert!(is_watched_file(Path::new(".bazelproject")));
+        assert!(is_watched_file(Path::new("/some/path/.bazelproject")));
     }
 
     #[test]
-    fn test_is_not_build_file() {
-        assert!(!is_build_file(Path::new("build")));
-        assert!(!is_build_file(Path::new("workspace")));
-        assert!(!is_build_file(Path::new("README.md")));
-        assert!(!is_build_file(Path::new("Cargo.toml")));
-        assert!(!is_build_file(Path::new("src/main.rs")));
-        assert!(!is_build_file(Path::new("")));
+    fn test_is_not_watched_file() {
+        assert!(!is_watched_file(Path::new("build")));
+        assert!(!is_watched_file(Path::new("workspace")));
+        assert!(!is_watched_file(Path::new("README.md")));
+        assert!(!is_watched_file(Path::new("Cargo.toml")));
+        assert!(!is_watched_file(Path::new("src/main.rs")));
+        assert!(!is_watched_file(Path::new("")));
+    }
+
+    #[test]
+    fn test_is_bazelproject_file() {
+        assert!(is_bazelproject_file(Path::new(".bazelproject")));
+        assert!(is_bazelproject_file(Path::new("/workspace/.bazelproject")));
+        assert!(!is_bazelproject_file(Path::new("BUILD")));
+        assert!(!is_bazelproject_file(Path::new("WORKSPACE")));
+        assert!(!is_bazelproject_file(Path::new("")));
+    }
+
+    #[test]
+    fn test_is_bazel_output_dir_with_symlinks() {
+        let tmp = std::env::temp_dir().join("watcher_test_bazel_output");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let real_dir = tmp.join("real_output");
+        std::fs::create_dir_all(&real_dir).unwrap();
+
+        for name in &["bazel-bin", "bazel-out", "bazel-testlogs", "bazel-genfiles"] {
+            let link = tmp.join(name);
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&real_dir, &link).unwrap();
+            assert!(is_bazel_output_dir(&link), "{} should be detected as bazel output", name);
+        }
+
+        let regular_dir = tmp.join("bazel-something");
+        std::fs::create_dir_all(&regular_dir).unwrap();
+        assert!(!is_bazel_output_dir(&regular_dir), "non-symlink bazel- dir should not match");
+
+        let src_dir = tmp.join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        assert!(!is_bazel_output_dir(&src_dir), "regular dir should not match");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

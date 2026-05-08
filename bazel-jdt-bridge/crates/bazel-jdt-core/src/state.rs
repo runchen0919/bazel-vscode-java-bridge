@@ -52,7 +52,7 @@ impl BazelJdtState {
         let graph = DependencyGraph::new();
         let parser = BuildFileParser::new();
 
-        let aspect_label = match crate::aspect::extract_if_needed(&workspace_root) {
+        let aspect_label = match crate::aspect::extract_if_needed(&workspace_root, bazel_path) {
             Ok(label) => label,
             Err(e) => {
                 log::warn!(

@@ -68,7 +68,7 @@ fn dependency_chain_classpath() {
     graph.set_target_jars("//app:app", vec!["app.jar".to_string()]);
 
     let classpath =
-        ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaBinary).unwrap();
+        ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaBinary, None).unwrap();
 
     let paths: Vec<&str> = classpath.entries.iter().map(|e| e.path.as_str()).collect();
 
@@ -175,7 +175,7 @@ fn pipe_delimited_classpath_output() {
     graph.set_target_jars("//app:app", vec!["app.jar".to_string()]);
 
     let classpath =
-        ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaBinary).unwrap();
+        ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaBinary, None).unwrap();
 
     let entries = classpath.to_pipe_delimited_entries();
     assert!(

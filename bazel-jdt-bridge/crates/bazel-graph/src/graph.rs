@@ -267,18 +267,24 @@ impl DependencyGraph {
                     self.target_source_jars.insert(label.clone(), source_map);
                 }
 
+                let pkg = package_of(label);
                 for dep in &info.deps {
-                    self.add_dep(label, dep);
+                    let resolved = normalize_dep_label(dep, pkg);
+                    self.add_dep(label, &resolved);
                 }
                 for dep in &info.runtime_deps {
-                    self.add_dep(label, dep);
+                    let resolved = normalize_dep_label(dep, pkg);
+                    self.add_dep(label, &resolved);
                 }
                 for exp in &info.exports {
-                    self.add_dep(label, exp);
+                    let resolved = normalize_dep_label(exp, pkg);
+                    self.add_dep(label, &resolved);
                 }
             } else {
+                let pkg = package_of(label);
                 for dep in &info.deps {
-                    self.add_dep(label, dep);
+                    let resolved = normalize_dep_label(dep, pkg);
+                    self.add_dep(label, &resolved);
                 }
             }
         }
@@ -396,13 +402,16 @@ impl DependencyGraph {
                 }
 
                 for dep in &rule.deps {
-                    self.add_dep(label, dep);
+                    let resolved = normalize_dep_label(dep, &package_label);
+                    self.add_dep(label, &resolved);
                 }
                 for dep in &rule.runtime_deps {
-                    self.add_dep(label, dep);
+                    let resolved = normalize_dep_label(dep, &package_label);
+                    self.add_dep(label, &resolved);
                 }
                 for exp in &rule.exports {
-                    self.add_dep(label, exp);
+                    let resolved = normalize_dep_label(exp, &package_label);
+                    self.add_dep(label, &resolved);
                 }
 
                 if rule.test_only {
@@ -419,13 +428,16 @@ impl DependencyGraph {
             if !existing_labels.contains(label) {
                 self.add_target(label);
                 for dep in &rule.deps {
-                    self.add_dep(label, dep);
+                    let resolved = normalize_dep_label(dep, &package_label);
+                    self.add_dep(label, &resolved);
                 }
                 for dep in &rule.runtime_deps {
-                    self.add_dep(label, dep);
+                    let resolved = normalize_dep_label(dep, &package_label);
+                    self.add_dep(label, &resolved);
                 }
                 for exp in &rule.exports {
-                    self.add_dep(label, exp);
+                    let resolved = normalize_dep_label(exp, &package_label);
+                    self.add_dep(label, &resolved);
                 }
                 if rule.test_only {
                     self.testonly_targets.insert(label.clone());
@@ -453,13 +465,16 @@ impl DependencyGraph {
                 self.testonly_targets.insert(target_label.clone());
             }
             for dep in &rule.deps {
-                self.add_dep(&target_label, dep);
+                let resolved = normalize_dep_label(dep, &package_label);
+                self.add_dep(&target_label, &resolved);
             }
             for dep in &rule.runtime_deps {
-                self.add_dep(&target_label, dep);
+                let resolved = normalize_dep_label(dep, &package_label);
+                self.add_dep(&target_label, &resolved);
             }
             for exp in &rule.exports {
-                self.add_dep(&target_label, exp);
+                let resolved = normalize_dep_label(exp, &package_label);
+                self.add_dep(&target_label, &resolved);
             }
         }
     }
@@ -479,6 +494,54 @@ impl DependencyGraph {
     pub fn target_count(&self) -> usize {
         self.label_to_index.len()
     }
+}
+
+/// Normalize a dep label relative to a package label.
+///
+/// Resolves relative deps to fully-qualified form:
+/// - `":target"` → `"//package:target"`
+/// - `"target"` (bare name) → `"//package:target"`
+/// - `"//already/qualified:target"` → unchanged
+/// - `"@external//pkg:target"` → unchanged
+///
+/// Extract the package label from a fully-qualified target label.
+/// E.g., `//foo/bar:baz` → `//foo/bar`, `//foo/bar` → `//foo/bar`.
+fn package_of(label: &str) -> &str {
+    match label.rfind(':') {
+        Some(i) if label.starts_with("//") => &label[..i],
+        _ => label,
+    }
+}
+
+pub fn normalize_dep_label(dep: &str, package_label: &str) -> String {
+    if dep.starts_with("//") || dep.starts_with('@') {
+        return normalize_label(dep);
+    }
+    if let Some(target) = dep.strip_prefix(':') {
+        format!("{}:{}", package_label, target)
+    } else {
+        format!("{}:{}", package_label, dep)
+    }
+}
+
+/// Normalize a Bazel label to canonical form.
+///
+/// Converts package-only labels to include the implicit target name:
+/// - `"//foo/bar"` → `"//foo/bar:bar"`
+/// - `"//foo/bar:baz"` → unchanged
+/// - `"@maven//:guava"` → unchanged
+pub fn normalize_label(label: &str) -> String {
+    if !label.starts_with("//") {
+        return label.to_string();
+    }
+    if label[2..].contains(':') {
+        return label.to_string();
+    }
+    let last_component = label.rsplit('/').next().unwrap_or("");
+    if last_component.is_empty() {
+        return label.to_string();
+    }
+    format!("{}:{}", label, last_component)
 }
 
 /// Compute Bazel package label from a BUILD file path relative to workspace root.
@@ -1297,5 +1360,89 @@ mod tests {
 
         assert!(graph.has_target("//foo:new_lib"));
         assert!(graph.has_target("//bar:util"));
+    }
+
+    #[test]
+    fn test_normalize_dep_label_bare_name() {
+        assert_eq!(
+            normalize_dep_label("helper", "//src/java/com/example"),
+            "//src/java/com/example:helper"
+        );
+    }
+
+    #[test]
+    fn test_normalize_dep_label_colon_prefix() {
+        assert_eq!(
+            normalize_dep_label(":utils", "//src/java/com/example"),
+            "//src/java/com/example:utils"
+        );
+    }
+
+    #[test]
+    fn test_normalize_dep_label_already_qualified() {
+        assert_eq!(
+            normalize_dep_label("//other/package:lib", "//src/java/com/example"),
+            "//other/package:lib"
+        );
+    }
+
+    #[test]
+    fn test_normalize_dep_label_external() {
+        assert_eq!(
+            normalize_dep_label("@maven//:guava", "//src/java/com/example"),
+            "@maven//:guava"
+        );
+    }
+
+    #[test]
+    fn test_normalize_dep_label_package_only() {
+        assert_eq!(
+            normalize_dep_label("//src/java/com/urbancompass/monitoring", "//irrelevant"),
+            "//src/java/com/urbancompass/monitoring:monitoring"
+        );
+    }
+
+    #[test]
+    fn test_normalize_label_package_only() {
+        assert_eq!(
+            normalize_label("//src/java/com/urbancompass/monitoring"),
+            "//src/java/com/urbancompass/monitoring:monitoring"
+        );
+    }
+
+    #[test]
+    fn test_normalize_label_already_canonical() {
+        assert_eq!(normalize_label("//foo/bar:baz"), "//foo/bar:baz");
+    }
+
+    #[test]
+    fn test_normalize_label_external() {
+        assert_eq!(normalize_label("@maven//:guava"), "@maven//:guava");
+    }
+
+    #[test]
+    fn test_normalize_label_external_canonical() {
+        assert_eq!(
+            normalize_label("@@rules_jvm_external~maven~maven//:guava"),
+            "@@rules_jvm_external~maven~maven//:guava"
+        );
+    }
+
+    #[test]
+    fn test_normalize_label_root_package() {
+        assert_eq!(normalize_label("//"), "//");
+    }
+
+    #[test]
+    fn test_normalize_label_bare_and_relative() {
+        assert_eq!(normalize_label("target"), "target");
+        assert_eq!(normalize_label(":target"), ":target");
+    }
+
+    #[test]
+    fn test_package_of() {
+        assert_eq!(package_of("//foo/bar:baz"), "//foo/bar");
+        assert_eq!(package_of("//foo/bar"), "//foo/bar");
+        assert_eq!(package_of("//:root_target"), "//");
     }
 }

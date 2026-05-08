@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AspectError {
@@ -38,11 +39,68 @@ fn aspect_files() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
-/// Compute a SHA-256 hash of all embedded aspect file contents.
-/// Used to detect when the bundled aspect version has changed.
-pub fn version_hash() -> String {
+/// Parse the major version number from `bazel --version` output.
+/// Returns the major version, or `None` if parsing fails.
+pub fn parse_bazel_major_version(version_output: &str) -> Option<u32> {
+    let version_str = version_output.trim();
+    let version_part = version_str
+        .strip_prefix("bazel ")
+        .unwrap_or(version_str);
+    version_part.split('.').next()?.parse::<u32>().ok()
+}
+
+/// Detect the major version of the Bazel binary.
+/// Returns the major version number, defaulting to 8 if detection fails.
+pub fn detect_bazel_major_version(bazel_path: &str) -> u32 {
+    match Command::new(bazel_path).arg("--version").output() {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            match parse_bazel_major_version(&stdout) {
+                Some(v) => v,
+                None => {
+                    log::warn!(
+                        "Could not parse Bazel version from '{}', defaulting to 8",
+                        stdout.trim()
+                    );
+                    8
+                }
+            }
+        }
+        Ok(output) => {
+            log::warn!(
+                "bazel --version exited with {}, defaulting to version 8",
+                output.status
+            );
+            8
+        }
+        Err(e) => {
+            log::warn!(
+                "Failed to run '{} --version': {}, defaulting to version 8",
+                bazel_path,
+                e
+            );
+            8
+        }
+    }
+}
+
+fn adapt_bundled_bzl_for_version(content: &str, bazel_major: u32) -> String {
+    if bazel_major >= 9 {
+        return content.to_string();
+    }
+    content
+        .lines()
+        .filter(|line| !line.contains("toolchains_aspects"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Compute a SHA-256 hash of all embedded aspect file contents,
+/// incorporating the Bazel major version so that version changes trigger re-extraction.
+pub fn version_hash(bazel_major: u32) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
+    hasher.update(bazel_major.to_le_bytes());
     for (name, content) in aspect_files() {
         hasher.update(name.as_bytes());
         hasher.update(content.as_bytes());
@@ -52,10 +110,11 @@ pub fn version_hash() -> String {
 
 /// Extract aspect files to the workspace if the embedded version differs from
 /// what's already on disk. Returns the workspace-relative Bazel aspect label.
-pub fn extract_if_needed(workspace_root: &Path) -> Result<String, AspectError> {
+pub fn extract_if_needed(workspace_root: &Path, bazel_path: &str) -> Result<String, AspectError> {
+    let bazel_major = detect_bazel_major_version(bazel_path);
     let aspect_dir = workspace_root.join(ASPECT_DIR_NAME);
     let version_path = aspect_dir.join(VERSION_FILE);
-    let current_hash = version_hash();
+    let current_hash = version_hash(bazel_major);
 
     let needs_extraction = !matches!(
         fs::read_to_string(&version_path),
@@ -66,15 +125,21 @@ pub fn extract_if_needed(workspace_root: &Path) -> Result<String, AspectError> {
         fs::create_dir_all(&aspect_dir)?;
 
         for (name, content) in aspect_files() {
-            fs::write(aspect_dir.join(name), content)?;
+            let final_content = if name == "intellij_info_bundled.bzl" {
+                adapt_bundled_bzl_for_version(content, bazel_major)
+            } else {
+                content.to_string()
+            };
+            fs::write(aspect_dir.join(name), final_content)?;
         }
 
         fs::write(&version_path, &current_hash)?;
 
         log::info!(
-            "Extracted aspect files to {} (version: {})",
+            "Extracted aspect files to {} (version: {}, bazel: {})",
             aspect_dir.display(),
-            &current_hash[..8]
+            &current_hash[..8],
+            bazel_major
         );
     }
 
@@ -115,17 +180,24 @@ mod tests {
 
     #[test]
     fn test_version_hash_deterministic() {
-        let h1 = version_hash();
-        let h2 = version_hash();
+        let h1 = version_hash(8);
+        let h2 = version_hash(8);
         assert_eq!(h1, h2, "version hash must be deterministic");
         assert!(!h1.is_empty());
         assert_eq!(h1.len(), 64, "SHA-256 hex should be 64 chars");
     }
 
     #[test]
+    fn test_version_hash_differs_by_bazel_version() {
+        let h8 = version_hash(8);
+        let h9 = version_hash(9);
+        assert_ne!(h8, h9, "version hash must differ between Bazel 8 and 9");
+    }
+
+    #[test]
     fn test_extract_creates_files() {
         let tmp = tempfile::tempdir().unwrap();
-        let label = extract_if_needed(tmp.path()).unwrap();
+        let label = extract_if_needed(tmp.path(), "bazel").unwrap();
 
         assert!(label.contains("intellij_info_bundled.bzl%intellij_info_aspect"));
         assert!(label.starts_with("//.bazel-jdt/aspects:intellij_info_bundled.bzl"));
@@ -148,15 +220,15 @@ mod tests {
     #[test]
     fn test_extract_skips_when_version_matches() {
         let tmp = tempfile::tempdir().unwrap();
-        extract_if_needed(tmp.path()).unwrap();
+        extract_if_needed(tmp.path(), "bazel").unwrap();
 
         let version_path = tmp.path().join(ASPECT_DIR_NAME).join(VERSION_FILE);
         std::thread::sleep(std::time::Duration::from_millis(10));
 
-        extract_if_needed(tmp.path()).unwrap();
+        extract_if_needed(tmp.path(), "bazel").unwrap();
 
         let stored = fs::read_to_string(&version_path).unwrap();
-        assert_eq!(stored, version_hash());
+        assert_eq!(stored, version_hash(detect_bazel_major_version("bazel")));
     }
 
     #[test]
@@ -164,15 +236,56 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let aspect_dir = tmp.path().join(ASPECT_DIR_NAME);
 
-        extract_if_needed(tmp.path()).unwrap();
+        extract_if_needed(tmp.path(), "bazel").unwrap();
 
         let version_path = aspect_dir.join(VERSION_FILE);
         fs::write(&version_path, "invalid-hash").unwrap();
 
-        extract_if_needed(tmp.path()).unwrap();
+        extract_if_needed(tmp.path(), "bazel").unwrap();
 
         let stored = fs::read_to_string(&version_path).unwrap();
-        assert_eq!(stored, version_hash());
+        assert_eq!(stored, version_hash(detect_bazel_major_version("bazel")));
+    }
+
+    #[test]
+    fn test_parse_bazel_major_version_standard() {
+        assert_eq!(parse_bazel_major_version("bazel 7.4.1"), Some(7));
+        assert_eq!(parse_bazel_major_version("bazel 8.0.0"), Some(8));
+        assert_eq!(parse_bazel_major_version("bazel 9.1.0"), Some(9));
+    }
+
+    #[test]
+    fn test_parse_bazel_major_version_with_whitespace() {
+        assert_eq!(parse_bazel_major_version("bazel 8.0.0\n"), Some(8));
+        assert_eq!(parse_bazel_major_version("  bazel 9.0.0  "), Some(9));
+    }
+
+    #[test]
+    fn test_parse_bazel_major_version_invalid() {
+        assert_eq!(parse_bazel_major_version(""), None);
+        assert_eq!(parse_bazel_major_version("not-bazel"), None);
+        assert_eq!(parse_bazel_major_version("bazel "), None);
+    }
+
+    #[test]
+    fn test_detect_bazel_major_version_invalid_binary() {
+        assert_eq!(detect_bazel_major_version("/nonexistent/bazel"), 8);
+    }
+
+    #[test]
+    fn test_adapt_bundled_bzl_bazel8_strips_toolchains_aspects() {
+        let content = "line1\n    toolchains_aspects = TOOLCHAIN_TYPE_DEPS,\nline3\n";
+        let result = adapt_bundled_bzl_for_version(content, 8);
+        assert!(!result.contains("toolchains_aspects"));
+        assert!(result.contains("line1"));
+        assert!(result.contains("line3"));
+    }
+
+    #[test]
+    fn test_adapt_bundled_bzl_bazel9_keeps_toolchains_aspects() {
+        let content = "line1\n    toolchains_aspects = TOOLCHAIN_TYPE_DEPS,\nline3\n";
+        let result = adapt_bundled_bzl_for_version(content, 9);
+        assert!(result.contains("toolchains_aspects"));
     }
 
     #[test]

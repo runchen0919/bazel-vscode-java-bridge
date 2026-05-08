@@ -182,6 +182,25 @@ public final class BazelBridge {
         }
     }
 
+    public void updateWatchPaths(String[] watchPaths) {
+        long h = snapshotHandle();
+        try {
+            jniExecutor.submit(() -> {
+                nativeUpdateWatchPaths(h, watchPaths != null ? watchPaths : new String[0]);
+                return null;
+            }).get(JNI_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted during updateWatchPaths", e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException) throw (RuntimeException) cause;
+            throw new RuntimeException("updateWatchPaths failed", cause);
+        } catch (TimeoutException e) {
+            throw new RuntimeException("updateWatchPaths timed out", e);
+        }
+    }
+
     public String[] getPendingChanges() {
         long h = snapshotHandleNullable();
         if (h == -1) return new String[0];
@@ -228,6 +247,7 @@ public final class BazelBridge {
 
     private native long nativeInitialize(String workspacePath, String bazelPath, String cacheDir);
     private native void nativeShutdown(long handle);
+    private native void nativeUpdateWatchPaths(long handle, String[] watchPaths);
     private native String[] nativeDiscoverTargets(long handle, String[] scopePatterns, String[] buildFlags);
     private native String[] nativeComputeClasspath(long handle, String targetLabel, String[] buildFlags);
     private native int nativeGetSyncState(long handle);

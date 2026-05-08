@@ -424,7 +424,7 @@ async fn run_bazel_command(
             .args(&args)
             .output()
         {
-            Ok(output) => return Ok(output),
+            Ok(output) => Ok(output),
             Err(e) => {
                 log::error!(
                     "[bazel-jdt] Direct spawn failed: {} (os_error={:?}). \
@@ -451,14 +451,14 @@ async fn run_bazel_command(
                 {
                     Ok(output) => {
                         log::info!("[bazel-jdt] /bin/sh fallback succeeded");
-                        return Ok(output);
+                        Ok(output)
                     }
                     Err(e2) => {
                         log::error!(
                             "[bazel-jdt] /bin/sh fallback also failed: {} (os_error={:?})",
                             e2, e2.raw_os_error()
                         );
-                        return Err(e);
+                        Err(e)
                     }
                 }
             }
@@ -466,8 +466,7 @@ async fn run_bazel_command(
     })
     .await
     .map_err(|e| {
-        BazelError::IoError(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        BazelError::IoError(std::io::Error::other(
             format!("blocking task failed: {}", e),
         ))
     })?

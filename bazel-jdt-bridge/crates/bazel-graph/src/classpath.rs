@@ -74,6 +74,7 @@ impl ComputedClasspath {
         graph: &DependencyGraph,
         target_label: &str,
         target_kind: TargetKind,
+        workspace_root: Option<&str>,
     ) -> Result<Self, GraphError> {
         let is_test = target_kind == TargetKind::JavaTest;
 
@@ -82,7 +83,9 @@ impl ComputedClasspath {
             TargetKind::JavaLibrary
             | TargetKind::JavaBinary
             | TargetKind::JavaTest
-            | TargetKind::Unknown => Self::compute_for_library(graph, target_label, is_test),
+            | TargetKind::Unknown => {
+                Self::compute_for_library(graph, target_label, is_test, workspace_root)
+            }
         }
     }
 
@@ -90,12 +93,12 @@ impl ComputedClasspath {
         graph: &DependencyGraph,
         target_label: &str,
         is_test_context: bool,
+        workspace_root: Option<&str>,
     ) -> Result<Self, GraphError> {
         let deps = graph.transitive_deps(target_label)?;
 
         let mut entries = Vec::new();
         let mut seen_jars = std::collections::HashSet::new();
-        let mut missing_source_count = 0usize;
 
         for dep_label in &deps {
             let dep_is_testonly = is_test_context && graph.is_testonly(dep_label);
@@ -124,13 +127,17 @@ impl ComputedClasspath {
                 for jar in jars {
                     if seen_jars.insert(jar.clone()) {
                         let source_path = graph.get_target_source_jar(dep_label, jar);
-                        if is_workspace_internal && source_path.is_none() {
-                            missing_source_count += 1;
-                        }
+                        let effective_source = if source_path.is_some() {
+                            source_path
+                        } else if is_workspace_internal {
+                            infer_source_attachment(dep_label, workspace_root)
+                        } else {
+                            None
+                        };
                         entries.push(ClasspathEntry {
                             entry_type: ClasspathEntryType::Library,
                             path: jar.clone(),
-                            source_attachment_path: source_path,
+                            source_attachment_path: effective_source,
                             is_test: dep_is_testonly,
                             is_exported: false,
                             access_rules: Vec::new(),
@@ -139,15 +146,6 @@ impl ComputedClasspath {
                     }
                 }
             }
-        }
-
-        if missing_source_count > 0 {
-            log::info!(
-                "Target '{}' has {} workspace-internal JARs without source attachments. \
-                 Consider adding 'build --output_groups=+_source_jars' to your .bazelrc for source-level navigation.",
-                target_label,
-                missing_source_count
-            );
         }
 
         let output_jars = graph
@@ -265,6 +263,29 @@ impl ComputedClasspath {
     }
 }
 
+fn infer_source_attachment(dep_label: &str, workspace_root: Option<&str>) -> Option<String> {
+    let ws_root = workspace_root?;
+    let label = dep_label.strip_prefix("//")?;
+    let package_path = label.split(':').next().unwrap_or(label);
+    if package_path.is_empty() {
+        return None;
+    }
+    let source_root_markers = [
+        "src/main/java/",
+        "src/test/java/",
+        "src/java/",
+        "javatests/",
+        "java/",
+    ];
+    for marker in &source_root_markers {
+        if let Some(idx) = package_path.find(marker) {
+            let root = &package_path[..idx + marker.len() - 1];
+            return Some(format!("{}/{}", ws_root, root));
+        }
+    }
+    None
+}
+
 /// Returns true for Bazel-internal toolchain/platform targets that should never
 /// appear on a Java classpath. In Bazel 6+, canonical repo labels use "@@" prefix.
 /// External dependencies like Maven artifacts (e.g. `@@maven+...//:guava`) must NOT
@@ -326,7 +347,7 @@ mod tests {
 
         graph.populate_from_aspects(&results, Path::new("/workspace"));
         let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary).unwrap();
+            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
 
         let proj_entries: Vec<&ClasspathEntry> = cp
             .entries
@@ -353,7 +374,7 @@ mod tests {
 
         graph.populate_from_aspects(&results, Path::new("/workspace"));
         let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary).unwrap();
+            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
 
         let proj_paths: Vec<&str> = cp
             .entries
@@ -385,7 +406,7 @@ mod tests {
 
         graph.populate_from_aspects(&results, Path::new("/workspace"));
         let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary).unwrap();
+            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
 
         let proj_paths: Vec<&str> = cp
             .entries
@@ -412,7 +433,7 @@ mod tests {
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
         let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app_test", TargetKind::JavaTest).unwrap();
+            ComputedClasspath::compute_for(&graph, "//app:app_test", TargetKind::JavaTest, None).unwrap();
 
         let greeter_entry = cp
             .entries
@@ -436,7 +457,7 @@ mod tests {
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
         let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app_test", TargetKind::JavaTest).unwrap();
+            ComputedClasspath::compute_for(&graph, "//app:app_test", TargetKind::JavaTest, None).unwrap();
 
         let helpers_entry = cp
             .entries
@@ -461,7 +482,7 @@ mod tests {
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
         let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary).unwrap();
+            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
 
         for entry in &cp.entries {
             assert!(
@@ -482,7 +503,7 @@ mod tests {
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
         let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary).unwrap();
+            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
 
         let proj_idx = cp
             .entries
@@ -511,7 +532,7 @@ mod tests {
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
         let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary).unwrap();
+            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
 
         let proj_count = cp
             .entries
@@ -544,7 +565,7 @@ mod tests {
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
         let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary).unwrap();
+            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
 
         let proj_count = cp
             .entries
@@ -579,7 +600,7 @@ mod tests {
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
         let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary).unwrap();
+            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
 
         let internal_entries: Vec<&ClasspathEntry> = cp
             .entries
@@ -612,7 +633,7 @@ mod tests {
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
         let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary).unwrap();
+            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
 
         let proj_count = cp
             .entries
@@ -650,7 +671,7 @@ mod tests {
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
         let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary).unwrap();
+            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
 
         let utils_proj_idx = cp.entries.iter().position(|e| {
             e.entry_type == ClasspathEntryType::Project && e.path == "//utils:string_utils"
@@ -702,7 +723,7 @@ mod tests {
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
         let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary).unwrap();
+            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
 
         let maven_entries: Vec<&ClasspathEntry> = cp
             .entries
@@ -733,7 +754,7 @@ mod tests {
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
         let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary).unwrap();
+            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
 
         let utils_proj_idx = cp
             .entries
@@ -788,7 +809,7 @@ mod tests {
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
         let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary).unwrap();
+            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
 
         let guava_entries: Vec<&ClasspathEntry> = cp
             .entries
@@ -857,7 +878,7 @@ mod tests {
         );
 
         let cp =
-            ComputedClasspath::compute_for(&graph, "//utils:string_utils", TargetKind::JavaLibrary)
+            ComputedClasspath::compute_for(&graph, "//utils:string_utils", TargetKind::JavaLibrary, None)
                 .unwrap();
 
         let guava_lib = cp
@@ -950,7 +971,7 @@ mod tests {
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
         let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary).unwrap();
+            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
 
         let guava_entry = cp
             .entries
@@ -974,7 +995,7 @@ mod tests {
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
         let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary).unwrap();
+            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
 
         let guava_entry = cp
             .entries

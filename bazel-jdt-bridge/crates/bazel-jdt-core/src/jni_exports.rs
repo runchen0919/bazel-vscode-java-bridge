@@ -166,79 +166,10 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeInitialize(
     }
 
     let key = next_key();
-    let workspace_root = state.workspace_root.clone();
 
     {
         let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
         reg.insert(key, Box::new(state));
-    }
-
-    let watcher_cb: Box<dyn Fn(Vec<std::path::PathBuf>) + Send + 'static> = {
-        let cb_key = key;
-        Box::new(move |paths| {
-            log::info!("Build files changed: {:?}", paths);
-            let reg = registry().lock().unwrap_or_else(|e| e.into_inner());
-            let state = match reg.get(&cb_key) {
-                Some(s) => s,
-                None => return,
-            };
-            if state.is_shutdown() {
-                return;
-            }
-
-            let mut changes_to_record: Vec<(String, String)> = Vec::new();
-            let mut packages_to_add: Vec<String> = Vec::new();
-
-            for path in &paths {
-                let path_str = path.to_string_lossy();
-                if let Ok(current_hash) = crate::change_detector::compute_file_hash(path) {
-                    let needs_update = match state.cache.get_build_hash(&path_str) {
-                        Ok(Some(cached_hash)) => cached_hash != current_hash,
-                        Ok(None) => true,
-                        Err(_) => true,
-                    };
-                    if needs_update {
-                        let package_label =
-                            crate::change_detector::compute_build_file_package_label(
-                                path,
-                                &state.workspace_root,
-                            );
-                        packages_to_add.push(package_label);
-                        changes_to_record.push((path_str.into_owned(), current_hash));
-                    }
-                }
-            }
-
-            if !packages_to_add.is_empty() {
-                let mut pending = state
-                    .pending_changes
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                for package_label in &packages_to_add {
-                    if !pending.contains(package_label) {
-                        pending.push(package_label.clone());
-                    }
-                }
-                drop(pending);
-
-                for (path_str, hash) in changes_to_record {
-                    let _ = state.cache.put_build_hash(&path_str, &hash);
-                }
-            }
-        })
-    };
-
-    {
-        let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
-        let state = reg.get_mut(&key).expect("key just inserted");
-        match BuildFileWatcher::start(workspace_root, watcher_cb) {
-            Ok(watcher) => {
-                *state.watcher.lock().unwrap_or_else(|e| e.into_inner()) = Some(watcher);
-            }
-            Err(e) => {
-                log::warn!("Failed to start file watcher: {}", e);
-            }
-        }
     }
 
     key as jlong
@@ -290,6 +221,118 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeShutdown(
         .take();
     if let Some(join_handle) = jh {
         let _ = join_handle.join();
+    }
+}
+
+fn make_watcher_callback(registry_key: u64) -> Box<dyn Fn(Vec<std::path::PathBuf>) + Send + 'static> {
+    Box::new(move |paths| {
+        log::info!("Watched files changed: {:?}", paths);
+        let reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+        let state = match reg.get(&registry_key) {
+            Some(s) => s,
+            None => return,
+        };
+        if state.is_shutdown() {
+            return;
+        }
+
+        let mut changes_to_record: Vec<(String, String)> = Vec::new();
+        let mut packages_to_add: Vec<String> = Vec::new();
+        let mut config_changed = false;
+
+        for path in &paths {
+            if crate::watcher::is_bazelproject_file(path) {
+                config_changed = true;
+                continue;
+            }
+
+            let path_str = path.to_string_lossy();
+            if let Ok(current_hash) = crate::change_detector::compute_file_hash(path) {
+                let needs_update = match state.cache.get_build_hash(&path_str) {
+                    Ok(Some(cached_hash)) => cached_hash != current_hash,
+                    Ok(None) => true,
+                    Err(_) => true,
+                };
+                if needs_update {
+                    let package_label =
+                        crate::change_detector::compute_build_file_package_label(
+                            path,
+                            &state.workspace_root,
+                        );
+                    packages_to_add.push(package_label);
+                    changes_to_record.push((path_str.into_owned(), current_hash));
+                }
+            }
+        }
+
+        let mut pending = state
+            .pending_changes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        if config_changed && !pending.contains(&"__CONFIG_CHANGED__".to_string()) {
+            pending.push("__CONFIG_CHANGED__".to_string());
+        }
+
+        for package_label in &packages_to_add {
+            if !pending.contains(package_label) {
+                pending.push(package_label.clone());
+            }
+        }
+        drop(pending);
+
+        for (path_str, hash) in changes_to_record {
+            let _ = state.cache.put_build_hash(&path_str, &hash);
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeUpdateWatchPaths(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    watch_paths: JObjectArray,
+) {
+    let state = match get_state(&mut env, handle) {
+        Some(s) => s,
+        None => return,
+    };
+
+    // Stop existing watcher if any
+    {
+        let mut watcher_opt = state.watcher.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(mut watcher) = watcher_opt.take() {
+            watcher.stop();
+        }
+    }
+
+    let paths = match parse_java_string_array(&mut env, &watch_paths) {
+        Some(p) => p,
+        None => {
+            log::info!("No watch paths provided, watcher stopped");
+            return;
+        }
+    };
+
+    if paths.is_empty() {
+        log::info!("Empty watch paths, watcher stopped");
+        return;
+    }
+
+    let watch_path_bufs: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+    let workspace_root = state.workspace_root.clone();
+    let key = handle as u64;
+
+    let callback = make_watcher_callback(key);
+
+    match BuildFileWatcher::start(workspace_root, watch_path_bufs, callback) {
+        Ok(watcher) => {
+            *state.watcher.lock().unwrap_or_else(|e| e.into_inner()) = Some(watcher);
+        }
+        Err(e) => {
+            log::warn!("Failed to start file watcher: {}", e);
+        }
     }
 }
 
@@ -395,6 +438,7 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeComputeClasspath(
             return std::ptr::null_mut();
         }
     };
+    let label = bazel_graph::normalize_label(&label);
 
     let build_flags_vec = parse_java_string_array(&mut env, &build_flags);
     let build_flags_ref: Option<&[String]> = build_flags_vec.as_deref();
@@ -429,7 +473,7 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeComputeClasspath(
 
     if has_aspect_data {
         let graph = state.graph.lock().unwrap_or_else(|e| e.into_inner());
-        match bazel_graph::ComputedClasspath::compute_for(&graph, &label, target_kind) {
+        match bazel_graph::ComputedClasspath::compute_for(&graph, &label, target_kind, Some(state.workspace_root.to_str().unwrap_or(""))) {
             Ok(computed) => {
                 let entries = computed.to_pipe_delimited_entries();
                 log::debug!(
@@ -578,6 +622,7 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeGetTransitiveWorkspa
     for label in &labels {
         if let Ok(deps) = graph.transitive_deps(label) {
             for dep in deps {
+                let dep = bazel_graph::normalize_label(&dep);
                 if !dep.starts_with('@')
                     && !bazel_graph::is_bazel_internal_label(&dep)
                     && seen.insert(dep.clone())
@@ -706,6 +751,7 @@ fn run_full_resolution(
         &graph,
         target_label,
         infer_target_kind(target_label),
+        Some(state.workspace_root.to_str().unwrap_or("")),
     )
     .map_err(|e| format!("Graph computation failed: {}", e))
 }

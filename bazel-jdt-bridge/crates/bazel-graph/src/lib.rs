@@ -5,4 +5,4 @@ pub use classpath::{
     is_bazel_internal_label, AccessRule, ClasspathEntry, ClasspathEntryType, ComputedClasspath,
     JarConflict, TargetKind,
 };
-pub use graph::{DependencyGraph, GraphError};
+pub use graph::{normalize_label, DependencyGraph, GraphError};

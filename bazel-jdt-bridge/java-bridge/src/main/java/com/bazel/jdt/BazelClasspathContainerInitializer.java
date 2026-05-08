@@ -48,10 +48,16 @@ public class BazelClasspathContainerInitializer extends ClasspathContainerInitia
         }
         List<String> targetLabels = TargetProjectMapping.readTargets(project.getProject());
         if (targetLabels.isEmpty()) {
-            String wildcardLabel = "//" + project.getProject().getName() + ":*";
-            LOG.warn("No persisted target labels for project '" + project.getProject().getName()
-                + "' - using wildcard fallback '" + wildcardLabel + "'. Re-import to fix.");
-            BazelClasspathManager.setClasspathContainer(project.getProject(), wildcardLabel);
+            LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                "No persisted target labels for project '" + project.getProject().getName()
+                + "' - setting empty container (importer will configure)"));
+            JavaCore.setClasspathContainer(
+                BazelClasspathContainer.CONTAINER_PATH,
+                new IJavaProject[]{project},
+                new IClasspathContainer[]{BazelClasspathContainer.EMPTY},
+                null
+            );
+            return;
         } else {
             for (String label : targetLabels) {
                 BazelClasspathManager.setClasspathContainer(project.getProject(), label);
@@ -73,7 +79,8 @@ public class BazelClasspathContainerInitializer extends ClasspathContainerInitia
                 try {
                     BazelClasspathContainer container = new BazelClasspathContainer(
                         cached, Collections.emptyList(),
-                        bridge.getDependencyResolutionMode());
+                        bridge.getDependencyResolutionMode(),
+                        project.getProject().getName());
                     JavaCore.setClasspathContainer(
                         BazelClasspathContainer.CONTAINER_PATH,
                         new IJavaProject[]{project},

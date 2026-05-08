@@ -3,10 +3,7 @@ package com.bazel.jdt;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Set;
 
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IWorkspaceRoot;
@@ -67,6 +64,14 @@ public class BazelProjectImporter extends AbstractProjectImporter {
         bridge.initialize(workspacePath, bazelPath, cacheDir);
         LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
             "Importing Bazel workspace: " + workspacePath));
+
+        if (projectView != null && !projectView.getDirectories().isEmpty()) {
+            String[] watchDirs = projectView.getDirectories().toArray(new String[0]);
+            bridge.updateWatchPaths(watchDirs);
+            LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                "File watcher scoped to " + watchDirs.length + " directories from .bazelproject"));
+        }
+
         if (projectView != null && projectView.hasScope()) {
             java.util.List<String> patterns = projectView.getScopePatterns();
             scopePatterns = patterns.toArray(new String[0]);
@@ -96,46 +101,54 @@ public class BazelProjectImporter extends AbstractProjectImporter {
 
         for (String targetLabel : targets) {
             try {
-                String packageName = extractPackageName(targetLabel);
-                IProject project = workspaceRoot.getProject(packageName);
+                String packagePath = extractPackageName(targetLabel);
+                String projectName = LabelUtils.toProjectName(packagePath);
+                IProject project = workspaceRoot.getProject(projectName);
 
-                boolean projectExisted = project.exists() && project.isOpen();
-                if (!project.exists()) {
-                    File packageDir = new File(workspacePath, packageName);
-                    org.eclipse.core.resources.IProjectDescription projDesc =
-                        project.getWorkspace().newProjectDescription(packageName);
-                    projDesc.setLocation(new Path(packageDir.getAbsolutePath()));
+                String inferredSourceRoot = SourceRootUtils.inferSourceRoot(workspacePath, packagePath);
+
+                if (project.exists() && inferredSourceRoot != null
+                        && project.getDescription().getLocation() != null) {
                     LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
-                        "Creating project '" + packageName + "' at " + packageDir.getAbsolutePath()));
+                        "Recreating project '" + projectName
+                        + "' — stale custom location conflicts with linked source folder"));
+                    project.delete(false, true, monitor);
+                }
+
+                if (!project.exists()) {
+                    org.eclipse.core.resources.IProjectDescription projDesc =
+                        project.getWorkspace().newProjectDescription(projectName);
+                    if (inferredSourceRoot == null) {
+                        File packageDir = new File(workspacePath, packagePath);
+                        projDesc.setLocation(new Path(packageDir.getAbsolutePath()));
+                        LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                            "Creating project '" + projectName + "' at " + packageDir.getAbsolutePath()));
+                    } else {
+                        LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                            "Creating project '" + projectName + "' with default location (source root: " + inferredSourceRoot + ")"));
+                    }
                     project.create(projDesc, monitor);
                 }
                 if (!project.isOpen()) {
                     project.open(monitor);
                 }
 
-                ensureNatures(project, monitor);
-
                 TargetProjectMapping.appendTargets(project, Collections.singletonList(targetLabel));
+
+                ensureNatures(project, monitor);
 
                 if (firstProject) {
                     TargetProjectMapping.storeWorkspaceConfig(project, workspacePath, bazelPath, cacheDir);
                     firstProject = false;
                 }
 
-                if (!projectExisted) {
-                    configureClasspath(project, packageName, workspacePath, targetLabel, monitor);
-                } else {
-                    BazelClasspathManager.setClasspathContainer(project, targetLabel);
-                }
+                configureClasspath(project, packagePath, workspacePath, targetLabel, inferredSourceRoot, monitor);
             } catch (Exception e) {
                 LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
                     "Failed to import target: " + targetLabel, e));
             }
         }
 
-        if ("transitive".equals(bridge.getDependencyResolutionMode())) {
-            autoImportTransitiveDeps(bridge, targets, workspacePath, bazelPath, cacheDir, workspaceRoot, monitor);
-        }
     }
 
     private static void ensureNatures(IProject project, IProgressMonitor monitor) throws CoreException {
@@ -160,82 +173,38 @@ public class BazelProjectImporter extends AbstractProjectImporter {
         }
     }
 
-    private void autoImportTransitiveDeps(BazelBridge bridge, String[] userTargets,
-            String workspacePath, String bazelPath, String cacheDir,
-            IWorkspaceRoot workspaceRoot, IProgressMonitor monitor) {
-        try {
-            String[] allDeps = bridge.getTransitiveWorkspaceDeps(userTargets);
-            if (allDeps == null || allDeps.length == 0) return;
-
-            Set<String> importedPackageNames = new HashSet<>();
-            for (String target : userTargets) {
-                importedPackageNames.add(extractPackageName(target));
-            }
-
-            List<String> missingLabels = new ArrayList<>();
-            for (String depLabel : allDeps) {
-                String pkg = extractPackageName(depLabel);
-                if (!importedPackageNames.contains(pkg) && !workspaceRoot.getProject(pkg).exists()) {
-                    missingLabels.add(depLabel);
-                }
-            }
-
-            if (missingLabels.isEmpty()) return;
-
-            LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
-                "Auto-importing " + missingLabels.size() + " transitive workspace dependencies"));
-
-            for (String depLabel : missingLabels) {
-                try {
-                    String packageName = extractPackageName(depLabel);
-                    IProject project = workspaceRoot.getProject(packageName);
-
-                    if (!project.exists()) {
-                        File packageDir = new File(workspacePath, packageName);
-                        org.eclipse.core.resources.IProjectDescription projDesc =
-                            project.getWorkspace().newProjectDescription(packageName);
-                        projDesc.setLocation(new Path(packageDir.getAbsolutePath()));
-                        LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
-                            "Auto-importing transitive dep '" + packageName + "' for " + depLabel));
-                        project.create(projDesc, monitor);
-                    }
-                    if (!project.isOpen()) {
-                        project.open(monitor);
-                    }
-
-                    ensureNatures(project, monitor);
-
-                    TargetProjectMapping.appendTargets(project, Collections.singletonList(depLabel));
-                    TargetProjectMapping.setAutoImported(project, true);
-
-                    if (!TargetProjectMapping.hasWorkspaceConfig(workspaceRoot)) {
-                        TargetProjectMapping.storeWorkspaceConfig(project, workspacePath, bazelPath, cacheDir);
-                    }
-
-                    configureClasspath(project, packageName, workspacePath, depLabel, monitor);
-                } catch (Exception e) {
-                    LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
-                        "Failed to auto-import transitive dep: " + depLabel, e));
-                }
-            }
-        } catch (Exception e) {
-            LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
-                "Transitive dependency auto-import failed", e));
-        }
-    }
-
     private void configureClasspath(IProject project, String packageName,
-            String workspacePath, String targetLabel, IProgressMonitor monitor) throws CoreException {
+            String workspacePath, String targetLabel, String inferredSourceRoot,
+            IProgressMonitor monitor) throws CoreException {
         IJavaProject javaProject = JavaCore.create(project);
 
-        List<IClasspathEntry> entries = new ArrayList<>();
+        List<IClasspathEntry> sourceEntries = new ArrayList<>();
 
         for (String srcRoot : STANDARD_SRC_ROOTS) {
             java.io.File srcDir = new java.io.File(workspacePath, packageName + "/" + srcRoot);
             if (srcDir.isDirectory()) {
                 IPath sourcePath = new Path("/" + project.getName() + "/" + srcRoot);
-                entries.add(JavaCore.newSourceEntry(sourcePath));
+                sourceEntries.add(JavaCore.newSourceEntry(sourcePath));
             }
+        }
+
+        List<IClasspathEntry> entries = new ArrayList<>();
+        if (sourceEntries.isEmpty()) {
+            if (inferredSourceRoot != null) {
+                try {
+                    SourceRootUtils.configureLinkedSourceFolder(
+                        project, workspacePath, inferredSourceRoot, packageName, entries, monitor);
+                } catch (Exception e) {
+                    LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                        "Failed to create linked source folder for " + packageName
+                        + ", falling back to project root: " + e.getMessage()));
+                    entries.add(JavaCore.newSourceEntry(new Path("/" + project.getName())));
+                }
+            } else {
+                entries.add(JavaCore.newSourceEntry(new Path("/" + project.getName())));
+            }
+        } else {
+            entries.addAll(sourceEntries);
         }
 
         entries.add(JavaCore.newContainerEntry(BazelClasspathContainer.CONTAINER_PATH));
@@ -250,6 +219,8 @@ public class BazelProjectImporter extends AbstractProjectImporter {
 
         javaProject.setRawClasspath(entries.toArray(new IClasspathEntry[0]), monitor);
         javaProject.setOutputLocation(new Path("/" + project.getName() + "/bin"), monitor);
+
+        project.refreshLocal(org.eclipse.core.resources.IResource.DEPTH_INFINITE, monitor);
     }
 
     private void addJreContainerEntry(List<IClasspathEntry> entries) {

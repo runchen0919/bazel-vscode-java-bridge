@@ -33,6 +33,12 @@ public final class BazelProjectCreator {
     public static IProject createProjectForPackage(
             String workspacePath, String packagePath, String targetLabel,
             IProgressMonitor monitor) {
+        return createProjectForPackage(workspacePath, packagePath, targetLabel, monitor, false);
+    }
+
+    public static IProject createProjectForPackage(
+            String workspacePath, String packagePath, String targetLabel,
+            IProgressMonitor monitor, boolean deferContainerResolution) {
         try {
             String projectName = LabelUtils.toProjectName(packagePath);
             IWorkspaceRoot workspaceRoot = ResourcesPlugin.getWorkspace().getRoot();
@@ -69,7 +75,7 @@ public final class BazelProjectCreator {
             TargetProjectMapping.appendTargets(project, Collections.singletonList(targetLabel));
 
             ensureNatures(project, monitor);
-            configureClasspath(project, packagePath, workspacePath, targetLabel, inferredSourceRoot, monitor);
+            configureClasspath(project, packagePath, workspacePath, targetLabel, inferredSourceRoot, monitor, deferContainerResolution);
 
             return project;
         } catch (Exception e) {
@@ -103,7 +109,7 @@ public final class BazelProjectCreator {
 
     private static void configureClasspath(IProject project, String packageName,
             String workspacePath, String targetLabel, String inferredSourceRoot,
-            IProgressMonitor monitor) throws CoreException {
+            IProgressMonitor monitor, boolean deferContainerResolution) throws CoreException {
         IJavaProject javaProject = JavaCore.create(project);
 
         List<IClasspathEntry> sourceEntries = new ArrayList<>();
@@ -139,7 +145,9 @@ public final class BazelProjectCreator {
 
         addJreContainerEntry(entries);
 
-        BazelClasspathManager.setClasspathContainer(project, targetLabel);
+        if (!deferContainerResolution) {
+            BazelClasspathManager.setClasspathContainer(project, targetLabel);
+        }
 
         javaProject.setRawClasspath(entries.toArray(new IClasspathEntry[0]), monitor);
         javaProject.setOutputLocation(new Path("/" + project.getName() + "/bin"), monitor);

@@ -3,7 +3,6 @@ package com.bazel.jdt;
 import static org.junit.Assert.*;
 
 import org.eclipse.jdt.core.IClasspathContainer;
-import org.eclipse.jdt.core.IClasspathEntry;
 import org.junit.Test;
 
 public class BazelClasspathContainerTest {

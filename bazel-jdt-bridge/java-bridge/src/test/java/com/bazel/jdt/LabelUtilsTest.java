@@ -58,4 +58,5 @@ public class LabelUtilsTest {
         String original = "src/java/com/urbancompass/demo_app";
         assertEquals(original, LabelUtils.fromProjectName(LabelUtils.toProjectName(original)));
     }
+
 }

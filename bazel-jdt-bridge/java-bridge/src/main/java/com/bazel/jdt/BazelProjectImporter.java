@@ -96,7 +96,7 @@ public class BazelProjectImporter extends AbstractProjectImporter {
                     try {
                         String packagePath = extractPackageName(targetLabel);
                         IProject project = BazelProjectCreator.createProjectForPackage(
-                            workspacePath, packagePath, targetLabel, pm);
+                            workspacePath, packagePath, targetLabel, pm, true);
 
                         if (firstProject && project != null) {
                             TargetProjectMapping.storeWorkspaceConfig(project, workspacePath, bazelPath, cacheDir);
@@ -131,7 +131,7 @@ public class BazelProjectImporter extends AbstractProjectImporter {
                                 continue;
                             }
                             BazelProjectCreator.createProjectForPackage(
-                                workspacePath, packagePath, firstLabel, pm);
+                                workspacePath, packagePath, firstLabel, pm, true);
                             LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
                                 "Auto-created project for dependency package: " + packagePath));
                         } catch (Exception e) {
@@ -140,6 +140,8 @@ public class BazelProjectImporter extends AbstractProjectImporter {
                         }
                     }
                 }
+
+                BazelClasspathManager.refreshClasspath();
             }
         }, monitor);
 

@@ -26,4 +26,5 @@ public final class LabelUtils {
     public static String fromProjectName(String projectName) {
         return projectName.replace('.', '/');
     }
+
 }

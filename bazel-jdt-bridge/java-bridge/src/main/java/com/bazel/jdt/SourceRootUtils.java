@@ -106,27 +106,50 @@ public final class SourceRootUtils {
     public static void configureLinkedSourceFolder(IProject project, String workspacePath,
             String sourceRoot, String packagePath, List<IClasspathEntry> entries,
             IProgressMonitor monitor) throws CoreException {
-        String folderName = linkedFolderName(sourceRoot);
-        IFolder linkedFolder = project.getFolder(folderName);
-
-        if (!linkedFolder.exists()) {
-            IPath targetPath = new Path(new File(workspacePath, sourceRoot).getAbsolutePath());
-            linkedFolder.createLink(targetPath, 0, monitor);
-        }
-
-        linkedFolder.refreshLocal(IResource.DEPTH_INFINITE, monitor);
-
-        String declPath = packagePath;
+        String topFolderName = linkedFolderName(sourceRoot);
         String prefix = sourceRoot + "/";
-        if (declPath.startsWith(prefix)) {
-            declPath = declPath.substring(prefix.length());
+        String declPath = packagePath.startsWith(prefix)
+            ? packagePath.substring(prefix.length()) : "";
+
+        if (declPath.isEmpty()) {
+            IFolder linkedFolder = project.getFolder(topFolderName);
+            if (!linkedFolder.exists()) {
+                IPath targetPath = new Path(new File(workspacePath, sourceRoot).getAbsolutePath());
+                linkedFolder.createLink(targetPath, 0, monitor);
+            }
+            linkedFolder.refreshLocal(IResource.DEPTH_INFINITE, monitor);
+            IPath sourcePath = new Path("/" + project.getName() + "/" + topFolderName);
+            entries.add(JavaCore.newSourceEntry(sourcePath));
+            LOG.info("Configured linked source folder '" + topFolderName + "' → " + sourceRoot
+                + " for project " + project.getName());
+            return;
         }
 
-        IPath sourcePath = new Path("/" + project.getName() + "/" + folderName);
-        IPath[] inclusionPatterns = new IPath[] { new Path(declPath + "/") };
-        entries.add(JavaCore.newSourceEntry(sourcePath, inclusionPatterns, new IPath[0], null));
+        IFolder topFolder = project.getFolder(topFolderName);
+        if (!topFolder.exists()) {
+            topFolder.create(IResource.FORCE | IResource.DERIVED, true, monitor);
+        }
 
-        LOG.info("Configured linked source folder '" + folderName + "' → " + sourceRoot
-            + " with inclusion pattern '" + declPath + "/' for project " + project.getName());
+        String[] segments = declPath.split("/");
+        IFolder current = topFolder;
+        for (int i = 0; i < segments.length - 1; i++) {
+            current = current.getFolder(segments[i]);
+            if (!current.exists()) {
+                current.create(IResource.FORCE | IResource.DERIVED, true, monitor);
+            }
+        }
+
+        IFolder leafFolder = current.getFolder(segments[segments.length - 1]);
+        if (!leafFolder.exists()) {
+            IPath targetPath = new Path(new File(workspacePath, packagePath).getAbsolutePath());
+            leafFolder.createLink(targetPath, 0, monitor);
+        }
+        leafFolder.refreshLocal(IResource.DEPTH_INFINITE, monitor);
+
+        IPath sourcePath = new Path("/" + project.getName() + "/" + topFolderName);
+        entries.add(JavaCore.newSourceEntry(sourcePath));
+
+        LOG.info("Configured linked source folder '" + topFolderName + "/" + declPath
+            + "' → " + packagePath + " for project " + project.getName());
     }
 }

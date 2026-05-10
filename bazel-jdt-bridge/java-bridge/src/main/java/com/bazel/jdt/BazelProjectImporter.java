@@ -5,6 +5,7 @@ import java.util.List;
 
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IWorkspaceRoot;
+import org.eclipse.core.resources.IWorkspaceRunnable;
 import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.ILog;
@@ -41,11 +42,13 @@ public class BazelProjectImporter extends AbstractProjectImporter {
         String[] scopePatterns = null;
         BazelProjectView projectView = BazelProjectView.parse(rootFolder);
 
-        String bazelPath = "bazel";
+        final String bazelPath;
         if (projectView != null && !projectView.getBazelBinary().isEmpty()) {
             bazelPath = projectView.getBazelBinary();
             LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
                 "Using custom bazel binary from .bazelproject: " + bazelPath));
+        } else {
+            bazelPath = "bazel";
         }
 
         bridge.initialize(workspacePath, bazelPath, cacheDir);
@@ -83,57 +86,64 @@ public class BazelProjectImporter extends AbstractProjectImporter {
 
         if (targets == null || targets.length == 0) return;
 
-        IWorkspaceRoot workspaceRoot = ResourcesPlugin.getWorkspace().getRoot();
-        boolean firstProject = true;
+        ResourcesPlugin.getWorkspace().run(new IWorkspaceRunnable() {
+            @Override
+            public void run(IProgressMonitor pm) throws CoreException {
+                IWorkspaceRoot workspaceRoot = ResourcesPlugin.getWorkspace().getRoot();
+                boolean firstProject = true;
 
-        for (String targetLabel : targets) {
-            try {
-                String packagePath = extractPackageName(targetLabel);
-                IProject project = BazelProjectCreator.createProjectForPackage(
-                    workspacePath, packagePath, targetLabel, monitor);
+                for (String targetLabel : targets) {
+                    try {
+                        String packagePath = extractPackageName(targetLabel);
+                        IProject project = BazelProjectCreator.createProjectForPackage(
+                            workspacePath, packagePath, targetLabel, pm, true);
 
-                if (firstProject && project != null) {
-                    TargetProjectMapping.storeWorkspaceConfig(project, workspacePath, bazelPath, cacheDir);
-                    firstProject = false;
-                }
-            } catch (Exception e) {
-                LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
-                    "Failed to import target: " + targetLabel, e));
-            }
-        }
-
-        String loadingMode = bridge.getDependencySourceLoadingMode();
-        String[] depEntries = bridge.getTransitiveWorkspaceDeps(targets);
-        bridge.setCachedDependencyPackages(depEntries);
-
-        if ("full-project".equals(loadingMode) && depEntries != null && depEntries.length > 0) {
-            for (String entry : depEntries) {
-                try {
-                    String[] parts = entry.split("\\|", 2);
-                    String packagePath = parts[0];
-                    String firstLabel = parts.length > 1 && !parts[1].isEmpty()
-                        ? parts[1].split(",")[0]
-                        : null;
-
-                    String projName = LabelUtils.toProjectName(packagePath);
-                    if (workspaceRoot.getProject(projName).exists()) {
-                        continue;
+                        if (firstProject && project != null) {
+                            TargetProjectMapping.storeWorkspaceConfig(project, workspacePath, bazelPath, cacheDir);
+                            firstProject = false;
+                        }
+                    } catch (Exception e) {
+                        LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
+                            "Failed to import target: " + targetLabel, e));
                     }
-                    if (firstLabel == null) {
-                        LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
-                            "No target label for dependency package: " + packagePath));
-                        continue;
-                    }
-                    BazelProjectCreator.createProjectForPackage(
-                        workspacePath, packagePath, firstLabel, monitor);
-                    LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
-                        "Auto-created project for dependency package: " + packagePath));
-                } catch (Exception e) {
-                    LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
-                        "Failed to auto-create project for dependency: " + entry, e));
                 }
+
+                String loadingMode = bridge.getDependencySourceLoadingMode();
+                String[] depEntries = bridge.getTransitiveWorkspaceDeps(targets);
+                bridge.setCachedDependencyPackages(depEntries);
+
+                if ("full-project".equals(loadingMode) && depEntries != null && depEntries.length > 0) {
+                    for (String entry : depEntries) {
+                        try {
+                            String[] parts = entry.split("\\|", 2);
+                            String packagePath = parts[0];
+                            String firstLabel = parts.length > 1 && !parts[1].isEmpty()
+                                ? parts[1].split(",")[0]
+                                : null;
+
+                            String projName = LabelUtils.toProjectName(packagePath);
+                            if (workspaceRoot.getProject(projName).exists()) {
+                                continue;
+                            }
+                            if (firstLabel == null) {
+                                LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                                    "No target label for dependency package: " + packagePath));
+                                continue;
+                            }
+                            BazelProjectCreator.createProjectForPackage(
+                                workspacePath, packagePath, firstLabel, pm, true);
+                            LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                                "Auto-created project for dependency package: " + packagePath));
+                        } catch (Exception e) {
+                            LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                                "Failed to auto-create project for dependency: " + entry, e));
+                        }
+                    }
+                }
+
+                BazelClasspathManager.refreshClasspath();
             }
-        }
+        }, monitor);
 
     }
 

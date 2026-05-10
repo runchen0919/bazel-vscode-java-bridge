@@ -122,13 +122,26 @@ public class SourceRootUtilsTest {
     // --- linkedFolderName tests ---
 
     @Test
-    public void linkedFolderName_standard() {
+    public void linkedFolderName_standardSourceRoot() {
         assertEquals("_src_java", SourceRootUtils.linkedFolderName("src/java"));
     }
 
     @Test
-    public void linkedFolderName_singleSegment() {
+    public void linkedFolderName_sameSourceRootForDifferentPackages() {
+        String folderA = SourceRootUtils.linkedFolderName("src/java");
+        String folderB = SourceRootUtils.linkedFolderName("src/java");
+        assertEquals("Same source root produces same folder name", folderA, folderB);
+        assertEquals("_src_java", folderA);
+    }
+
+    @Test
+    public void linkedFolderName_singleSegmentSourceRoot() {
         assertEquals("_java", SourceRootUtils.linkedFolderName("java"));
+    }
+
+    @Test
+    public void linkedFolderName_deepSourceRoot() {
+        assertEquals("_src_main_java", SourceRootUtils.linkedFolderName("src/main/java"));
     }
 
     // --- integration-style tests ---

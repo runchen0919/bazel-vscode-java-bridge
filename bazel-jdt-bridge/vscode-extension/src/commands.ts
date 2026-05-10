@@ -32,7 +32,7 @@ export function registerImportCommand(context: vscode.ExtensionContext) {
                         progress.report({ message: 'Discovering Java targets...' });
                         await vscode.commands.executeCommand('java.execute.workspaceCommand',
                             'bazel-jdt.importProject', workspaceRoot, bazelPath, config.cacheDir,
-                            scopePatterns, buildFlags, config.dependencyResolution);
+                            scopePatterns, buildFlags, config.dependencyResolution, config.dependencySourceLoading);
                     }
                 );
                 vscode.window.showInformationMessage('Bazel project imported successfully');
@@ -49,7 +49,7 @@ export function registerRuntimeCommands(context: vscode.ExtensionContext) {
             try {
                 const config = getConfig();
                 await vscode.commands.executeCommand('java.execute.workspaceCommand',
-                    'bazel-jdt.syncProject', config.dependencyResolution);
+                    'bazel-jdt.syncProject', config.dependencyResolution, config.dependencySourceLoading);
             } catch (error) {
                 vscode.window.showErrorMessage(`Bazel sync failed: ${error}`);
             }
@@ -71,6 +71,17 @@ export function registerRuntimeCommands(context: vscode.ExtensionContext) {
                     vscode.window.showErrorMessage(`Failed to clear cache: ${error}`);
                 }
             }
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('bazel-jdt.createProjectForPackage', async (packagePath: string, targetLabel: string) => {
+            const config = getConfig();
+            const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
+            await vscode.commands.executeCommand('java.execute.workspaceCommand',
+                'bazel-jdt.createProjectForPackage', workspaceRoot, config.bazelPath,
+                config.cacheDir, packagePath, targetLabel);
+            vscode.window.showInformationMessage(`Created project for ${packagePath}`);
         })
     );
 }

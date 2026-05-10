@@ -109,10 +109,8 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeInitialize(
 ) -> jlong {
     // Initialize stderr logger (controlled via RUST_LOG env var, default=warn).
     // try_init is idempotent — safe if called multiple times.
-    let _ = env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("warn"),
-    )
-    .try_init();
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
+        .try_init();
 
     let workspace: String = match env.get_string(&workspace_path) {
         Ok(s) => s.into(),
@@ -226,7 +224,9 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeShutdown(
     }
 }
 
-fn make_watcher_callback(registry_key: u64) -> Box<dyn Fn(Vec<std::path::PathBuf>) + Send + 'static> {
+fn make_watcher_callback(
+    registry_key: u64,
+) -> Box<dyn Fn(Vec<std::path::PathBuf>) + Send + 'static> {
     Box::new(move |paths| {
         log::info!("Watched files changed: {:?}", paths);
         let reg = registry().lock().unwrap_or_else(|e| e.into_inner());
@@ -256,11 +256,10 @@ fn make_watcher_callback(registry_key: u64) -> Box<dyn Fn(Vec<std::path::PathBuf
                     Err(_) => true,
                 };
                 if needs_update {
-                    let package_label =
-                        crate::change_detector::compute_build_file_package_label(
-                            path,
-                            &state.workspace_root,
-                        );
+                    let package_label = crate::change_detector::compute_build_file_package_label(
+                        path,
+                        &state.workspace_root,
+                    );
                     packages_to_add.push(package_label);
                     changes_to_record.push((path_str.into_owned(), current_hash));
                 }
@@ -364,7 +363,10 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeDiscoverTargets(
         "nativeDiscoverTargets: sync path, workspace={:?}",
         state.workspace_root
     );
-    let targets = match state.invoker.discover_java_targets_sync(scope_ref, build_flags_ref) {
+    let targets = match state
+        .invoker
+        .discover_java_targets_sync(scope_ref, build_flags_ref)
+    {
         Ok(t) => t,
         Err(e) => {
             let msg = format!(
@@ -396,19 +398,31 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeDiscoverTargets(
     // Uses sync path (system()) to avoid EBADF with 11k+ open JVM file descriptors.
     {
         let aspect_targets = targets.clone();
-        log::info!("Starting batch aspect build for {} targets", aspect_targets.len());
-        match state.invoker.resolve_full_classpath_sync(&aspect_targets, build_flags_ref) {
+        log::info!(
+            "Starting batch aspect build for {} targets",
+            aspect_targets.len()
+        );
+        match state
+            .invoker
+            .resolve_full_classpath_sync(&aspect_targets, build_flags_ref)
+        {
             Ok(aspect_results) => {
                 let mut graph = state.graph.lock().unwrap_or_else(|e| e.into_inner());
                 graph.populate_from_aspects(&aspect_results, &state.workspace_root);
                 log::info!(
                     "Batch aspect build: {} targets, {} with JARs",
                     aspect_results.len(),
-                    aspect_results.iter().filter(|r| r.java_info.is_some()).count()
+                    aspect_results
+                        .iter()
+                        .filter(|r| r.java_info.is_some())
+                        .count()
                 );
             }
             Err(e) => {
-                log::warn!("Batch aspect build failed: {}. Per-target resolution will be used.", e);
+                log::warn!(
+                    "Batch aspect build failed: {}. Per-target resolution will be used.",
+                    e
+                );
             }
         }
     }
@@ -475,7 +489,12 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeComputeClasspath(
 
     if has_aspect_data {
         let graph = state.graph.lock().unwrap_or_else(|e| e.into_inner());
-        match bazel_graph::ComputedClasspath::compute_for(&graph, &label, target_kind, Some(state.workspace_root.to_str().unwrap_or(""))) {
+        match bazel_graph::ComputedClasspath::compute_for(
+            &graph,
+            &label,
+            target_kind,
+            Some(state.workspace_root.to_str().unwrap_or("")),
+        ) {
             Ok(computed) => {
                 let entries = computed.to_pipe_delimited_entries();
                 log::debug!(
@@ -618,30 +637,25 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeGetTransitiveWorkspa
     };
 
     let graph = state.graph.lock().unwrap_or_else(|e| e.into_inner());
-    let mut workspace_deps: Vec<String> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
 
-    for label in &labels {
-        if let Ok(deps) = graph.transitive_deps(label) {
-            for dep in deps {
-                let dep = bazel_graph::normalize_label(&dep);
-                if !dep.starts_with('@')
-                    && !bazel_graph::is_bazel_internal_label(&dep)
-                    && seen.insert(dep.clone())
-                {
-                    workspace_deps.push(dep);
-                }
+    let label_refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+    let entries = match graph.transitive_dependency_targets(&label_refs) {
+        Ok(e) => e,
+        Err(_) => {
+            return match create_string_array(&mut env, &[]) {
+                Ok(arr) => arr,
+                Err(_) => std::ptr::null_mut(),
             }
         }
-    }
+    };
 
     log::info!(
-        "Transitive workspace deps for {} targets: {} labels",
+        "Transitive workspace dep packages for {} targets: {} packages",
         labels.len(),
-        workspace_deps.len()
+        entries.len()
     );
 
-    match create_string_array(&mut env, &workspace_deps) {
+    match create_string_array(&mut env, &entries) {
         Ok(arr) => arr,
         Err(_) => std::ptr::null_mut(),
     }

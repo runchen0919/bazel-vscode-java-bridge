@@ -59,11 +59,7 @@ impl BuildFileWatcher {
                 continue;
             }
             if let Err(e) = debouncer.watch(&abs_path, RecursiveMode::Recursive) {
-                log::warn!(
-                    "Failed to watch directory {}: {}",
-                    abs_path.display(),
-                    e
-                );
+                log::warn!("Failed to watch directory {}: {}", abs_path.display(), e);
             }
         }
 
@@ -216,5 +212,4 @@ mod tests {
         assert!(!is_bazelproject_file(Path::new("WORKSPACE")));
         assert!(!is_bazelproject_file(Path::new("")));
     }
-
 }

@@ -43,9 +43,7 @@ fn aspect_files() -> Vec<(&'static str, &'static str)> {
 /// Returns the major version, or `None` if parsing fails.
 pub fn parse_bazel_major_version(version_output: &str) -> Option<u32> {
     let version_str = version_output.trim();
-    let version_part = version_str
-        .strip_prefix("bazel ")
-        .unwrap_or(version_str);
+    let version_part = version_str.strip_prefix("bazel ").unwrap_or(version_str);
     version_part.split('.').next()?.parse::<u32>().ok()
 }
 

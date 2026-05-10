@@ -174,7 +174,8 @@ impl BazelInvoker {
             return Ok(Vec::new());
         }
 
-        let aspect_output = self.build_with_aspects_sync(targets, &self.aspect_label, build_flags)?;
+        let aspect_output =
+            self.build_with_aspects_sync(targets, &self.aspect_label, build_flags)?;
 
         let info_files = crate::output::parse_aspect_output_locations(&aspect_output);
 
@@ -192,7 +193,8 @@ impl BazelInvoker {
                 Err(e) => {
                     log::warn!(
                         "Failed to read aspect output file {}: {}",
-                        normalized_path, e
+                        normalized_path,
+                        e
                     );
                     continue;
                 }
@@ -293,10 +295,18 @@ impl BazelInvoker {
 fn resolve_binary(name: &str) -> Option<PathBuf> {
     let path = Path::new(name);
     if path.is_absolute() {
-        return if path.exists() { Some(path.to_path_buf()) } else { None };
+        return if path.exists() {
+            Some(path.to_path_buf())
+        } else {
+            None
+        };
     }
     let path_var = std::env::var("PATH").ok()?;
-    let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
+    let sep = if cfg!(target_os = "windows") {
+        ';'
+    } else {
+        ':'
+    };
     for dir in path_var.split(sep) {
         let candidate = Path::new(dir).join(name);
         if candidate.exists() {
@@ -326,7 +336,9 @@ fn run_bazel_command_sync(
 
     log::info!(
         "Spawning via system(): {:?} (resolved from {:?}), cwd={:?}",
-        binary, bazel_path, workspace_root
+        binary,
+        bazel_path,
+        workspace_root
     );
 
     let tmp_dir = std::env::temp_dir();
@@ -339,7 +351,10 @@ fn run_bazel_command_sync(
         "cd {} && {} {} > {} 2> {}",
         shell_escape(workspace_root),
         shell_escape(binary),
-        args.iter().map(|a| shell_escape_str(a)).collect::<Vec<_>>().join(" "),
+        args.iter()
+            .map(|a| shell_escape_str(a))
+            .collect::<Vec<_>>()
+            .join(" "),
         shell_escape(&stdout_path),
         shell_escape(&stderr_path),
     );
@@ -350,10 +365,9 @@ fn run_bazel_command_sync(
         fn system(command: *const std::os::raw::c_char) -> std::os::raw::c_int;
     }
 
-    let c_cmd = std::ffi::CString::new(shell_cmd)
-        .map_err(|e| BazelError::CommandFailed {
-            message: format!("CString conversion error: {}", e),
-        })?;
+    let c_cmd = std::ffi::CString::new(shell_cmd).map_err(|e| BazelError::CommandFailed {
+        message: format!("CString conversion error: {}", e),
+    })?;
 
     let ret = unsafe { system(c_cmd.as_ptr()) };
     log::debug!("system() returned raw status: {}", ret);
@@ -383,10 +397,16 @@ fn run_bazel_command_sync(
 
     log::info!(
         "system() completed, status={}, stdout_len={}, stderr_len={}",
-        status, stdout.len(), stderr.len()
+        status,
+        stdout.len(),
+        stderr.len()
     );
 
-    Ok(std::process::Output { status, stdout, stderr })
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 fn shell_escape(p: &Path) -> String {
@@ -412,7 +432,10 @@ async fn run_bazel_command(
 
         log::info!(
             "[bazel-jdt] Spawning: {:?} (resolved from {:?}), cwd={:?}, args={:?}",
-            binary, bazel_path, workspace_root, args
+            binary,
+            bazel_path,
+            workspace_root,
+            args
         );
 
         // Try 1: direct spawn
@@ -429,7 +452,10 @@ async fn run_bazel_command(
                 log::error!(
                     "[bazel-jdt] Direct spawn failed: {} (os_error={:?}). \
                      binary={:?}, cwd={:?}, cwd_exists={}, PATH={:?}",
-                    e, e.raw_os_error(), binary, workspace_root,
+                    e,
+                    e.raw_os_error(),
+                    binary,
+                    workspace_root,
                     workspace_root.exists(),
                     std::env::var("PATH").unwrap_or_default()
                 );
@@ -456,7 +482,8 @@ async fn run_bazel_command(
                     Err(e2) => {
                         log::error!(
                             "[bazel-jdt] /bin/sh fallback also failed: {} (os_error={:?})",
-                            e2, e2.raw_os_error()
+                            e2,
+                            e2.raw_os_error()
                         );
                         Err(e)
                     }
@@ -466,9 +493,10 @@ async fn run_bazel_command(
     })
     .await
     .map_err(|e| {
-        BazelError::IoError(std::io::Error::other(
-            format!("blocking task failed: {}", e),
-        ))
+        BazelError::IoError(std::io::Error::other(format!(
+            "blocking task failed: {}",
+            e
+        )))
     })?
     .map_err(BazelError::IoError)
 }

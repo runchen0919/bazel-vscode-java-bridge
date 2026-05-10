@@ -2,6 +2,7 @@ package com.bazel.jdt;
 
 import java.util.List;
 
+import org.eclipse.core.resources.IProject;
 import org.eclipse.core.runtime.ILog;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.IStatus;
@@ -26,6 +27,10 @@ public class BazelCommandHandler implements IDelegateCommandHandler {
                 return BazelBridge.getInstance().getSyncState();
             case "bazel-jdt.shutdown":
                 return handleShutdown();
+            case "bazel-jdt.getDependencyPackages":
+                return handleGetDependencyPackages(arguments);
+            case "bazel-jdt.createProjectForPackage":
+                return handleCreateProjectForPackage(arguments, monitor);
             default:
                 return null;
         }
@@ -60,12 +65,18 @@ public class BazelCommandHandler implements IDelegateCommandHandler {
                 }
             }
 
-            // Accept resolution mode from TypeScript (argument index 5)
             if (arguments.size() > 5 && arguments.get(5) instanceof String) {
                 String mode = (String) arguments.get(5);
                 bridge.setDependencyResolutionMode(mode);
                 LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
                     "Dependency resolution mode set to: " + mode));
+            }
+
+            if (arguments.size() > 6 && arguments.get(6) instanceof String) {
+                String loadingMode = (String) arguments.get(6);
+                bridge.setDependencySourceLoadingMode(loadingMode);
+                LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                    "Dependency source loading mode set to: " + loadingMode));
             }
 
             String[] targets = bridge.discoverTargets(scopePatterns, buildFlags);
@@ -109,5 +120,60 @@ public class BazelCommandHandler implements IDelegateCommandHandler {
             LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt", "Bazel bridge shutdown failed", e));
         }
         return null;
+    }
+
+    private Object handleGetDependencyPackages(List<Object> arguments) {
+        try {
+            BazelBridge bridge = BazelBridge.getInstance();
+            String[] cached = bridge.getCachedDependencyPackages();
+            if (cached != null && cached.length > 0) {
+                return cached;
+            }
+            String[] scopePatterns = null;
+            if (!arguments.isEmpty() && arguments.get(0) instanceof List) {
+                @SuppressWarnings("unchecked")
+                List<String> patterns = (List<String>) arguments.get(0);
+                if (!patterns.isEmpty()) {
+                    scopePatterns = patterns.toArray(new String[0]);
+                }
+            }
+            String[] targets = bridge.discoverTargets(scopePatterns);
+            String[] depPackages = bridge.getTransitiveWorkspaceDeps(targets);
+            bridge.setCachedDependencyPackages(depPackages);
+            return depPackages != null ? depPackages : new String[0];
+        } catch (Exception e) {
+            LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
+                "Failed to get dependency packages", e));
+            return new String[0];
+        }
+    }
+
+    private Object handleCreateProjectForPackage(List<Object> arguments, IProgressMonitor monitor) {
+        try {
+            if (arguments.isEmpty() || !(arguments.get(0) instanceof String)) {
+                return null;
+            }
+            String packagePath = (String) arguments.get(0);
+            String workspacePath = TargetProjectMapping.readWorkspacePath();
+            if (workspacePath == null || workspacePath.isEmpty()) {
+                LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
+                    "Cannot create project: workspace path not available"));
+                return null;
+            }
+            String targetName = packagePath.contains("/")
+                ? packagePath.substring(packagePath.lastIndexOf('/') + 1)
+                : packagePath;
+            String targetLabel = "//" + packagePath + ":" + targetName;
+            IProject project = BazelProjectCreator.createProjectForPackage(
+                workspacePath, packagePath, targetLabel, monitor);
+            if (project != null) {
+                BazelClasspathManager.refreshClasspath();
+            }
+            return project != null ? project.getName() : null;
+        } catch (Exception e) {
+            LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
+                "Failed to create project for package: " + arguments, e));
+            return null;
+        }
     }
 }

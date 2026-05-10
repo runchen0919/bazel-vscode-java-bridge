@@ -127,8 +127,14 @@ impl ComputedClasspath {
                 for jar in jars {
                     if seen_jars.insert(jar.clone()) {
                         let source_path = graph.get_target_source_jar(dep_label, jar);
-                        let effective_source = if source_path.is_some() {
-                            source_path
+                        let effective_source = if let Some(ref sp) = source_path {
+                            if std::path::Path::new(sp).exists() {
+                                source_path
+                            } else if is_workspace_internal {
+                                infer_source_attachment(dep_label, workspace_root)
+                            } else {
+                                None
+                            }
                         } else if is_workspace_internal {
                             infer_source_attachment(dep_label, workspace_root)
                         } else {
@@ -263,6 +269,22 @@ impl ComputedClasspath {
     }
 }
 
+fn pkg_contains_java_content(dir: &std::path::Path) -> bool {
+    dir.read_dir()
+        .ok()
+        .map(|mut entries| {
+            entries.any(|e| {
+                e.map(|e| {
+                    let name = e.file_name();
+                    let name_str = name.to_string_lossy();
+                    name_str.ends_with(".java")
+                })
+                .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
 fn infer_source_attachment(dep_label: &str, workspace_root: Option<&str>) -> Option<String> {
     let ws_root = workspace_root?;
     let label = dep_label.strip_prefix("//")?;
@@ -270,19 +292,38 @@ fn infer_source_attachment(dep_label: &str, workspace_root: Option<&str>) -> Opt
     if package_path.is_empty() {
         return None;
     }
-    let source_root_markers = [
+
+    let source_root_markers = ["src/main/java", "src/test/java", "src/java", "java"];
+    let pkg = std::path::Path::new(ws_root).join(package_path);
+
+    // Probe filesystem: <workspace_root>/<package_path>/<marker>
+    for marker in &source_root_markers {
+        let candidate = pkg.join(marker);
+        if candidate.is_dir() {
+            return Some(candidate.to_string_lossy().into_owned());
+        }
+    }
+
+    // Fallback: package directory itself (flat layouts)
+    if pkg.is_dir() && pkg_contains_java_content(&pkg) {
+        return Some(pkg.to_string_lossy().into_owned());
+    }
+
+    // Substring fallback for labels with embedded source paths
+    let substring_markers = [
         "src/main/java/",
         "src/test/java/",
         "src/java/",
         "javatests/",
         "java/",
     ];
-    for marker in &source_root_markers {
+    for marker in &substring_markers {
         if let Some(idx) = package_path.find(marker) {
             let root = &package_path[..idx + marker.len() - 1];
             return Some(format!("{}/{}", ws_root, root));
         }
     }
+
     None
 }
 
@@ -346,8 +387,8 @@ mod tests {
         ];
 
         graph.populate_from_aspects(&results, Path::new("/workspace"));
-        let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
+        let cp = ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None)
+            .unwrap();
 
         let proj_entries: Vec<&ClasspathEntry> = cp
             .entries
@@ -373,8 +414,8 @@ mod tests {
         ];
 
         graph.populate_from_aspects(&results, Path::new("/workspace"));
-        let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
+        let cp = ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None)
+            .unwrap();
 
         let proj_paths: Vec<&str> = cp
             .entries
@@ -405,8 +446,8 @@ mod tests {
         ];
 
         graph.populate_from_aspects(&results, Path::new("/workspace"));
-        let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
+        let cp = ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None)
+            .unwrap();
 
         let proj_paths: Vec<&str> = cp
             .entries
@@ -433,7 +474,8 @@ mod tests {
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
         let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app_test", TargetKind::JavaTest, None).unwrap();
+            ComputedClasspath::compute_for(&graph, "//app:app_test", TargetKind::JavaTest, None)
+                .unwrap();
 
         let greeter_entry = cp
             .entries
@@ -457,7 +499,8 @@ mod tests {
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
         let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app_test", TargetKind::JavaTest, None).unwrap();
+            ComputedClasspath::compute_for(&graph, "//app:app_test", TargetKind::JavaTest, None)
+                .unwrap();
 
         let helpers_entry = cp
             .entries
@@ -481,8 +524,8 @@ mod tests {
         ];
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
-        let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
+        let cp = ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None)
+            .unwrap();
 
         for entry in &cp.entries {
             assert!(
@@ -502,8 +545,8 @@ mod tests {
         ];
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
-        let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
+        let cp = ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None)
+            .unwrap();
 
         let proj_idx = cp
             .entries
@@ -531,8 +574,8 @@ mod tests {
         ];
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
-        let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
+        let cp = ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None)
+            .unwrap();
 
         let proj_count = cp
             .entries
@@ -564,8 +607,8 @@ mod tests {
         ];
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
-        let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
+        let cp = ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None)
+            .unwrap();
 
         let proj_count = cp
             .entries
@@ -599,8 +642,8 @@ mod tests {
         ];
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
-        let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
+        let cp = ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None)
+            .unwrap();
 
         let internal_entries: Vec<&ClasspathEntry> = cp
             .entries
@@ -632,8 +675,8 @@ mod tests {
         ];
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
-        let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
+        let cp = ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None)
+            .unwrap();
 
         let proj_count = cp
             .entries
@@ -670,8 +713,8 @@ mod tests {
         ];
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
-        let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
+        let cp = ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None)
+            .unwrap();
 
         let utils_proj_idx = cp.entries.iter().position(|e| {
             e.entry_type == ClasspathEntryType::Project && e.path == "//utils:string_utils"
@@ -722,8 +765,8 @@ mod tests {
         ];
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
-        let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
+        let cp = ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None)
+            .unwrap();
 
         let maven_entries: Vec<&ClasspathEntry> = cp
             .entries
@@ -753,8 +796,8 @@ mod tests {
         ];
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
-        let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
+        let cp = ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None)
+            .unwrap();
 
         let utils_proj_idx = cp
             .entries
@@ -808,8 +851,8 @@ mod tests {
         ];
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
-        let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
+        let cp = ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None)
+            .unwrap();
 
         let guava_entries: Vec<&ClasspathEntry> = cp
             .entries
@@ -877,9 +920,13 @@ mod tests {
             "@@rules_jvm_external~maven~maven//:com_google_guava_guava".to_string(),
         );
 
-        let cp =
-            ComputedClasspath::compute_for(&graph, "//utils:string_utils", TargetKind::JavaLibrary, None)
-                .unwrap();
+        let cp = ComputedClasspath::compute_for(
+            &graph,
+            "//utils:string_utils",
+            TargetKind::JavaLibrary,
+            None,
+        )
+        .unwrap();
 
         let guava_lib = cp
             .entries
@@ -958,30 +1005,36 @@ mod tests {
 
     #[test]
     fn test_classpath_entry_includes_source_attachment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let guava_jar = tmp.path().join("guava.jar");
+        let src_jar = tmp.path().join("guava-sources.jar");
+        std::fs::File::create(&guava_jar).unwrap();
+        std::fs::File::create(&src_jar).unwrap();
+
         let mut graph = DependencyGraph::new();
         let results = vec![
             make_target("//app:app", vec!["@maven//:guava"], vec!["/app.jar"]),
             make_target_with_source_jar(
                 "@maven//:guava",
                 vec![],
-                "/guava.jar",
-                "/guava-sources.jar",
+                guava_jar.to_str().unwrap(),
+                src_jar.to_str().unwrap(),
             ),
         ];
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
-        let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
+        let cp = ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None)
+            .unwrap();
 
         let guava_entry = cp
             .entries
             .iter()
-            .find(|e| e.path == "/guava.jar")
+            .find(|e| e.path == guava_jar.to_str().unwrap())
             .expect("Expected guava.jar entry");
         assert_eq!(
             guava_entry.source_attachment_path,
-            Some("/guava-sources.jar".to_string()),
-            "Expected source attachment for guava.jar"
+            Some(src_jar.to_str().unwrap().to_string()),
+            "Expected source attachment for guava.jar when source JAR exists on disk"
         );
     }
 
@@ -994,8 +1047,8 @@ mod tests {
         ];
         graph.populate_from_aspects(&results, Path::new("/workspace"));
 
-        let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None).unwrap();
+        let cp = ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None)
+            .unwrap();
 
         let guava_entry = cp
             .entries
@@ -1046,5 +1099,181 @@ mod tests {
         ));
         assert!(is_bazel_internal_label("@@local_config_cc//:compiler"));
         assert!(is_bazel_internal_label("@@platforms//cpu:cpu"));
+    }
+
+    #[test]
+    fn test_infer_source_attachment_standard_maven_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().to_string_lossy().into_owned();
+        std::fs::create_dir_all(tmp.path().join("utils/src/main/java")).unwrap();
+        let result = infer_source_attachment("//utils:string_utils", Some(&ws));
+        assert_eq!(result, Some(format!("{}/utils/src/main/java", ws)));
+    }
+
+    #[test]
+    fn test_infer_source_attachment_test_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().to_string_lossy().into_owned();
+        std::fs::create_dir_all(tmp.path().join("foo/src/test/java")).unwrap();
+        let result = infer_source_attachment("//foo:foo_test", Some(&ws));
+        assert_eq!(result, Some(format!("{}/foo/src/test/java", ws)));
+    }
+
+    #[test]
+    fn test_infer_source_attachment_flat_java_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().to_string_lossy().into_owned();
+        std::fs::create_dir_all(tmp.path().join("bar/java")).unwrap();
+        let result = infer_source_attachment("//bar:bar_lib", Some(&ws));
+        assert_eq!(result, Some(format!("{}/bar/java", ws)));
+    }
+
+    #[test]
+    fn test_infer_source_attachment_no_matching_source_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().to_string_lossy().into_owned();
+        std::fs::create_dir_all(tmp.path().join("baz/data")).unwrap();
+        let result = infer_source_attachment("//baz:baz_lib", Some(&ws));
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_infer_source_attachment_no_workspace_root() {
+        let result = infer_source_attachment("//utils:string_utils", None);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_infer_source_attachment_substring_fallback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().to_string_lossy().into_owned();
+        // No filesystem dirs created — substring fallback kicks in
+        let result = infer_source_attachment("//some/src/main/java/com/example:lib", Some(&ws));
+        assert_eq!(result, Some(format!("{}/some/src/main/java", ws)));
+    }
+
+    #[test]
+    fn test_infer_source_attachment_probe_order_main_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().to_string_lossy().into_owned();
+        std::fs::create_dir_all(tmp.path().join("pkg/src/main/java")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("pkg/src/test/java")).unwrap();
+        let result = infer_source_attachment("//pkg:pkg_lib", Some(&ws));
+        assert_eq!(result, Some(format!("{}/pkg/src/main/java", ws)));
+    }
+
+    #[test]
+    fn test_source_jar_exists_on_disk_used_directly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let binary_jar = tmp.path().join("lib.jar");
+        let source_jar = tmp.path().join("lib-sources.jar");
+        std::fs::File::create(&binary_jar).unwrap();
+        std::fs::File::create(&source_jar).unwrap();
+
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target("//app:app", vec!["@maven//:guava"], vec!["/app.jar"]),
+            make_target_with_source_jar(
+                "@maven//:guava",
+                vec![],
+                binary_jar.to_str().unwrap(),
+                source_jar.to_str().unwrap(),
+            ),
+        ];
+        graph.populate_from_aspects(&results, Path::new(tmp.path()));
+
+        let cp = ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None)
+            .unwrap();
+
+        let entry = cp
+            .entries
+            .iter()
+            .find(|e| e.path == binary_jar.to_str().unwrap())
+            .expect("Expected lib.jar entry");
+        assert_eq!(
+            entry.source_attachment_path,
+            Some(source_jar.to_str().unwrap().to_string()),
+            "Source JAR should be used directly when it exists on disk"
+        );
+    }
+
+    #[test]
+    fn test_phantom_source_jar_external_dep_falls_to_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let binary_jar = tmp.path().join("lib.jar");
+        std::fs::File::create(&binary_jar).unwrap();
+        // source JAR deliberately not created — aspect data references a phantom file
+
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target("//app:app", vec!["@maven//:guava"], vec!["/app.jar"]),
+            make_target_with_source_jar(
+                "@maven//:guava",
+                vec![],
+                binary_jar.to_str().unwrap(),
+                "/nonexistent/lib-sources.jar",
+            ),
+        ];
+        graph.populate_from_aspects(&results, Path::new(tmp.path()));
+
+        let cp = ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None)
+            .unwrap();
+
+        let entry = cp
+            .entries
+            .iter()
+            .find(|e| e.path == binary_jar.to_str().unwrap())
+            .expect("Expected lib.jar entry");
+        assert!(
+            entry.source_attachment_path.is_none(),
+            "Phantom source JAR for external dep should produce None, got: {:?}",
+            entry.source_attachment_path
+        );
+    }
+
+    #[test]
+    fn test_phantom_source_jar_workspace_internal_falls_to_infer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().to_string_lossy().into_owned();
+        let binary_jar = tmp.path().join("utils/lib.jar");
+        std::fs::create_dir_all(tmp.path().join("utils")).unwrap();
+        std::fs::File::create(&binary_jar).unwrap();
+        std::fs::create_dir_all(tmp.path().join("utils/src/main/java")).unwrap();
+        // source JAR deliberately not created — aspect data references a phantom file
+
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target_with_jar_path(
+                "//app:app",
+                vec!["//utils:string_utils"],
+                "/app.jar",
+            ),
+            make_target_with_source_jar(
+                "//utils:string_utils",
+                vec![],
+                binary_jar.to_str().unwrap(),
+                "/nonexistent/lib-sources.jar", // phantom path
+            ),
+        ];
+        graph.populate_from_aspects(&results, Path::new(tmp.path()));
+
+        let cp = ComputedClasspath::compute_for(
+            &graph,
+            "//app:app",
+            TargetKind::JavaLibrary,
+            Some(&ws),
+        )
+        .unwrap();
+
+        let entry = cp
+            .entries
+            .iter()
+            .find(|e| e.path == binary_jar.to_str().unwrap())
+            .expect("Expected lib.jar entry");
+        assert_eq!(
+            entry.source_attachment_path,
+            Some(format!("{}/utils/src/main/java", ws)),
+            "Phantom source JAR for workspace-internal dep should fall back to infer_source_attachment"
+        );
     }
 }

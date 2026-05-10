@@ -34,6 +34,8 @@ function activateFull(context: vscode.ExtensionContext, workspaceRoot: string) {
     registerImportCommand(context);
     registerRuntimeCommands(context);
 
+    let dependencyPackageCache: string[] = [];
+
     const bazelprojectPattern = new vscode.RelativePattern(workspaceRoot, '.bazelproject');
     const watcher = vscode.workspace.createFileSystemWatcher(bazelprojectPattern);
     let debounceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -66,7 +68,21 @@ function activateFull(context: vscode.ExtensionContext, workspaceRoot: string) {
             try {
                 await vscode.commands.executeCommand('java.execute.workspaceCommand',
                     'bazel-jdt.importProject', workspaceRoot, bazelPath, config.cacheDir,
-                    patterns, buildFlags);
+                    patterns, buildFlags, config.dependencySourceLoading);
+
+                if (config.dependencySourceLoading === 'on-demand') {
+                    try {
+                        const depPackages = await vscode.commands.executeCommand(
+                            'java.execute.workspaceCommand', 'bazel-jdt.getDependencyPackages',
+                            patterns) as string[];
+                        if (depPackages) {
+                            dependencyPackageCache = depPackages;
+                        }
+                    } catch {
+                        // Non-critical — on-demand detection may not work but import succeeds
+                    }
+                }
+
                 vscode.window.showInformationMessage('Bazel project re-imported (scope changed)');
             } catch {
                 // Silently ignore — re-import is best-effort
@@ -79,6 +95,35 @@ function activateFull(context: vscode.ExtensionContext, workspaceRoot: string) {
         watcher.onDidCreate(triggerReimport),
         watcher,
         statusBarItem,
+    );
+
+    // On-demand dependency source loading: monitor opened Java files
+    context.subscriptions.push(
+        vscode.workspace.onDidOpenTextDocument(async (doc) => {
+            const config = getConfig();
+            if (config.dependencySourceLoading !== 'on-demand') return;
+            if (doc.languageId !== 'java') return;
+            if (doc.uri.scheme !== 'file') return;
+
+            const filePath = doc.uri.fsPath;
+            if (!filePath.startsWith(workspaceRoot)) return;
+
+            const relPath = filePath.substring(workspaceRoot.length + 1);
+            const matchedPackage = dependencyPackageCache.find(pkg =>
+                relPath.startsWith(pkg + '/') || relPath.startsWith(pkg + '\\')
+            );
+            if (!matchedPackage) return;
+
+            const fileName = path.basename(filePath);
+            const action = await vscode.window.showInformationMessage(
+                `${fileName} is not in a project. Create a project for '${matchedPackage}'?`,
+                'Create Project', 'Dismiss'
+            );
+            if (action === 'Create Project') {
+                await vscode.commands.executeCommand('bazel-jdt.createProjectForPackage',
+                    matchedPackage, '//' + matchedPackage + ':' + matchedPackage.split('/').pop());
+            }
+        })
     );
 }
 

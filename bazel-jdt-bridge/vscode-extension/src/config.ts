@@ -12,6 +12,7 @@ export interface BazelConfig {
     testSources: string[];
     deriveTargets: boolean;
     dependencyResolution: string;
+    dependencySourceLoading: string;
 }
 
 export function getConfig(): BazelConfig {
@@ -28,5 +29,6 @@ export function getConfig(): BazelConfig {
         testSources: config.get<string[]>('testSources', []),
         deriveTargets: config.get<boolean>('deriveTargets', true),
         dependencyResolution: config.get<string>('dependencyResolution', 'transitive'),
+        dependencySourceLoading: config.get<string>('dependencySourceLoading', 'full-project'),
     };
 }

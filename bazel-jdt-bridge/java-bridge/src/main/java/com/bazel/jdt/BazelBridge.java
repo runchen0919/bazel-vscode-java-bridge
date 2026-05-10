@@ -14,6 +14,8 @@ public final class BazelBridge {
     private String lastBazelPath;
     private String lastCacheDir;
     private volatile String dependencyResolutionMode = "transitive";
+    private volatile String dependencySourceLoadingMode = "full-project";
+    private volatile String[] cachedDependencyPackages = new String[0];
 
     private static ExecutorService createExecutor() {
         return Executors.newSingleThreadExecutor(r -> {
@@ -148,6 +150,22 @@ public final class BazelBridge {
         return this.dependencyResolutionMode;
     }
 
+    public void setDependencySourceLoadingMode(String mode) {
+        this.dependencySourceLoadingMode = mode;
+    }
+
+    public String getDependencySourceLoadingMode() {
+        return this.dependencySourceLoadingMode;
+    }
+
+    public void setCachedDependencyPackages(String[] packages) {
+        this.cachedDependencyPackages = packages != null ? packages : new String[0];
+    }
+
+    public String[] getCachedDependencyPackages() {
+        return this.cachedDependencyPackages;
+    }
+
     public void cleanCache() {
         long h = snapshotHandle();
         try {
@@ -162,6 +180,23 @@ public final class BazelBridge {
             throw new RuntimeException("cleanCache failed", cause);
         } catch (TimeoutException e) {
             throw new RuntimeException("cleanCache timed out", e);
+        }
+    }
+
+    public String[] getTransitiveWorkspaceDeps(String[] targetLabels) {
+        long h = snapshotHandle();
+        try {
+            return jniExecutor.submit(() -> nativeGetTransitiveWorkspaceDeps(h, targetLabels))
+                .get(JNI_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted during getTransitiveWorkspaceDeps", e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException) throw (RuntimeException) cause;
+            throw new RuntimeException("getTransitiveWorkspaceDeps failed", cause);
+        } catch (TimeoutException e) {
+            throw new RuntimeException("getTransitiveWorkspaceDeps timed out", e);
         }
     }
 
@@ -205,23 +240,6 @@ public final class BazelBridge {
         long h = snapshotHandleNullable();
         if (h == -1) return new String[0];
         return nativeGetPendingChanges(h);
-    }
-
-    public String[] getTransitiveWorkspaceDeps(String[] targetLabels) {
-        long h = snapshotHandle();
-        try {
-            return jniExecutor.submit(() -> nativeGetTransitiveWorkspaceDeps(h, targetLabels))
-                .get(JNI_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new RuntimeException("Interrupted during getTransitiveWorkspaceDeps", e);
-        } catch (ExecutionException e) {
-            Throwable cause = e.getCause();
-            if (cause instanceof RuntimeException) throw (RuntimeException) cause;
-            throw new RuntimeException("getTransitiveWorkspaceDeps failed", cause);
-        } catch (TimeoutException e) {
-            throw new RuntimeException("getTransitiveWorkspaceDeps timed out", e);
-        }
     }
 
     private long snapshotHandle() {

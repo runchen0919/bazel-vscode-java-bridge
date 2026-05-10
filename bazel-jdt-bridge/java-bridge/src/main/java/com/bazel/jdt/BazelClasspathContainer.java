@@ -78,6 +78,11 @@ public class BazelClasspathContainer implements IClasspathContainer {
                     return null;
                 }
                 IPath srcPath = sourcePath != null ? Path.fromPortableString(sourcePath) : null;
+                if (srcPath != null && !srcPath.toFile().exists()) {
+                    LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                        "Source attachment path does not exist, ignoring: " + sourcePath));
+                    srcPath = null;
+                }
                 IAccessRule[] accessRules = parseAccessRules(accessRulesStr);
                 boolean matchesTestPattern = false;
                 if (srcPath != null) {
@@ -109,6 +114,12 @@ public class BazelClasspathContainer implements IClasspathContainer {
                 }
                 String projectName = LabelUtils.toProjectName(extractPackageName(path));
                 if (ownerProjectName != null && projectName.equals(ownerProjectName)) {
+                    return null;
+                }
+                // In source-view mode, skip project references entirely —
+                // dependencies are only available via source attachment on LIB entries
+                String loadingMode = BazelBridge.getInstance().getDependencySourceLoadingMode();
+                if ("source-view".equals(loadingMode)) {
                     return null;
                 }
                 if ("optional".equals(resolutionMode)) {

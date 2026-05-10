@@ -30,6 +30,10 @@
             {
                 "command": "bazel-jdt.cleanCache",
                 "title": "Bazel: Clean Cache"
+            },
+            {
+                "command": "bazel-jdt.createProjectForPackage",
+                "title": "Bazel: Create Project for Package"
             }
         ],
         "configuration": {
@@ -109,6 +113,17 @@
                         "Mark inter-project dependencies as optional — suppresses errors when dependent projects are absent"
                     ],
                     "description": "How to handle inter-project dependencies when not all workspace targets are imported. 'transitive' auto-imports all dependencies; 'optional' suppresses errors for missing projects."
+                },
+                "bazel-jdt.dependencySourceLoading": {
+                    "type": "string",
+                    "default": "full-project",
+                    "enum": ["full-project", "on-demand", "source-view"],
+                    "enumDescriptions": [
+                        "Automatically create Eclipse Projects for all workspace-internal dependencies (recommended, full IDE features)",
+                        "Only create Projects for .bazelproject directories. Show notification to create projects on demand when navigating to dependency source files",
+                        "No additional Projects. Source attachment only — source viewing without semantic analysis"
+                    ],
+                    "description": "How to load source code for workspace-internal dependencies not listed in .bazelproject"
                 }
             }
         },

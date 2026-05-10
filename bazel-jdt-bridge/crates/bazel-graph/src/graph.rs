@@ -494,6 +494,47 @@ impl DependencyGraph {
     pub fn target_count(&self) -> usize {
         self.label_to_index.len()
     }
+
+    /// Get deduplicated package paths for all workspace-internal transitive dependencies.
+    /// Returns package paths (e.g., "utils", "service") not full labels.
+    pub fn transitive_dependency_packages(&self, target_label: &str) -> Result<Vec<String>, GraphError> {
+        let deps = self.transitive_deps(target_label)?;
+        let mut packages: Vec<String> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for dep in &deps {
+            let dep = crate::normalize_label(dep);
+            if !dep.starts_with('@') && !crate::is_bazel_internal_label(&dep) {
+                let pkg = package_path(&dep);
+                if seen.insert(pkg.clone()) {
+                    packages.push(pkg);
+                }
+            }
+        }
+        Ok(packages)
+    }
+
+    /// Get workspace-internal transitive dependency packages with their actual target labels.
+    /// Returns entries formatted as "package_path|//pkg:target1,//pkg:target2".
+    /// Each entry represents one unique package with all its dependency targets.
+    pub fn transitive_dependency_targets(&self, target_labels: &[&str]) -> Result<Vec<String>, GraphError> {
+        use std::collections::HashMap;
+        let mut pkg_targets: HashMap<String, Vec<String>> = HashMap::new();
+        for label in target_labels {
+            let deps = self.transitive_deps(label)?;
+            for dep in &deps {
+                let dep = crate::normalize_label(dep);
+                if !dep.starts_with('@') && !crate::is_bazel_internal_label(&dep) {
+                    let pkg = package_path(&dep);
+                    pkg_targets.entry(pkg).or_default().push(dep.clone());
+                }
+            }
+        }
+        let mut result: Vec<String> = Vec::new();
+        for (pkg, targets) in &pkg_targets {
+            result.push(format!("{}|{}", pkg, targets.join(",")));
+        }
+        Ok(result)
+    }
 }
 
 /// Extract the package label from a fully-qualified target label.
@@ -503,6 +544,11 @@ fn package_of(label: &str) -> &str {
         Some(i) if label.starts_with("//") => &label[..i],
         _ => label,
     }
+}
+
+fn package_path(label: &str) -> String {
+    let pkg = package_of(label);
+    pkg.strip_prefix("//").unwrap_or(pkg).to_string()
 }
 
 /// Normalize a dep label relative to a package label.
@@ -1443,5 +1489,70 @@ mod tests {
         assert_eq!(package_of("//foo/bar:baz"), "//foo/bar");
         assert_eq!(package_of("//foo/bar"), "//foo/bar");
         assert_eq!(package_of("//:root_target"), "//");
+    }
+
+    #[test]
+    fn test_package_path_extraction() {
+        assert_eq!(package_path("//utils:string_utils"), "utils");
+        assert_eq!(package_path("//service:user_service"), "service");
+        assert_eq!(package_path("//foo/bar:baz"), "foo/bar");
+        assert_eq!(package_path("//:root_target"), "");
+    }
+
+    #[test]
+    fn test_transitive_dependency_packages_basic() {
+        let mut graph = DependencyGraph::new();
+        graph.add_target("//app:app");
+        graph.add_target("//utils:string_utils");
+        graph.add_target("//service:user_service");
+        graph.add_dep("//app:app", "//utils:string_utils");
+        graph.add_dep("//app:app", "//service:user_service");
+
+        let packages = graph.transitive_dependency_packages("//app:app").unwrap();
+        assert_eq!(packages, vec!["service", "utils"]);
+    }
+
+    #[test]
+    fn test_transitive_dependency_packages_filters_external() {
+        let mut graph = DependencyGraph::new();
+        graph.add_target("//app:app");
+        graph.add_target("//utils:string_utils");
+        graph.add_target("@maven//:guava");
+        graph.add_dep("//app:app", "//utils:string_utils");
+        graph.add_dep("//app:app", "@maven//:guava");
+
+        let packages = graph.transitive_dependency_packages("//app:app").unwrap();
+        assert_eq!(packages, vec!["utils"]);
+    }
+
+    #[test]
+    fn test_transitive_dependency_packages_no_internal() {
+        let mut graph = DependencyGraph::new();
+        graph.add_target("//app:app");
+        graph.add_target("@maven//:guava");
+        graph.add_dep("//app:app", "@maven//:guava");
+
+        let packages = graph.transitive_dependency_packages("//app:app").unwrap();
+        assert!(packages.is_empty());
+    }
+
+    #[test]
+    fn test_transitive_dependency_packages_diamond_dedup() {
+        let mut graph = DependencyGraph::new();
+        graph.add_target("//app:app");
+        graph.add_target("//utils:string_utils");
+        graph.add_target("//service:user_service");
+        graph.add_target("//common:util");
+        graph.add_dep("//app:app", "//utils:string_utils");
+        graph.add_dep("//app:app", "//service:user_service");
+        graph.add_dep("//utils:string_utils", "//common:util");
+        graph.add_dep("//service:user_service", "//common:util");
+
+        let packages = graph.transitive_dependency_packages("//app:app").unwrap();
+        let common_count = packages.iter().filter(|p| **p == "common").count();
+        assert_eq!(common_count, 1, "common should appear exactly once, got: {:?}", packages);
+        assert!(packages.contains(&"common".to_string()));
+        assert!(packages.contains(&"utils".to_string()));
+        assert!(packages.contains(&"service".to_string()));
     }
 }

@@ -12,3 +12,6 @@ thiserror.workspace = true
 log.workspace = true
 bazel-aspect = { path = "../bazel-aspect" }
 bazel-parser = { path = "../bazel-parser" }
+
+[dev-dependencies]
+tempfile.workspace = true

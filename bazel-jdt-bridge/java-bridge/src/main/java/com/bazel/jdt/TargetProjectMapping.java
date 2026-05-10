@@ -126,6 +126,30 @@ public final class TargetProjectMapping {
         }
     }
 
+    /**
+     * Read the workspace root path from any project that has it stored.
+     * Used by on-demand project creation to find the workspace root.
+     *
+     * @return workspace path, or null if not available
+     */
+    public static String readWorkspacePath() {
+        org.eclipse.core.resources.IProject[] projects =
+            org.eclipse.core.resources.ResourcesPlugin.getWorkspace().getRoot().getProjects();
+        for (IProject project : projects) {
+            if (!project.exists()) continue;
+            try {
+                String value = project.getPersistentProperty(
+                    new QualifiedName(QUALIFIER, KEY_WORKSPACE_PATH));
+                if (value != null && !value.isEmpty()) {
+                    return value;
+                }
+            } catch (CoreException e) {
+                LOG.error("Failed to read workspace path from project '" + project.getName() + "'", e);
+            }
+        }
+        return null;
+    }
+
     public static String[] readWorkspaceConfig(IProject project) {
         try {
             String ws = project.getPersistentProperty(new QualifiedName(QUALIFIER, KEY_WORKSPACE_PATH));

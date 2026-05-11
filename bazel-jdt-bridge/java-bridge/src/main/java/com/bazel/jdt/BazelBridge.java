@@ -123,6 +123,26 @@ public final class BazelBridge {
         }
     }
 
+    public String[] computeClasspathMerged(String[] labels) {
+        if (labels == null || labels.length == 0) {
+            return new String[0];
+        }
+        long h = snapshotHandle();
+        try {
+            return jniExecutor.submit(() -> nativeComputeClasspathMerged(h, labels))
+                .get(JNI_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted during computeClasspathMerged", e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException) throw (RuntimeException) cause;
+            throw new RuntimeException("computeClasspathMerged failed", cause);
+        } catch (TimeoutException e) {
+            throw new RuntimeException("computeClasspathMerged timed out", e);
+        }
+    }
+
     private static final int SYNC_STATE_DEAD = 3;
 
     public int getSyncState() {
@@ -268,6 +288,7 @@ public final class BazelBridge {
     private native void nativeUpdateWatchPaths(long handle, String[] watchPaths);
     private native String[] nativeDiscoverTargets(long handle, String[] scopePatterns, String[] buildFlags);
     private native String[] nativeComputeClasspath(long handle, String targetLabel, String[] buildFlags);
+    private native String[] nativeComputeClasspathMerged(long handle, String[] labels);
     private native int nativeGetSyncState(long handle);
     private native void nativeCleanCache(long handle);
     private native String[] nativeGetPendingChanges(long handle);

@@ -1,4 +1,5 @@
 use crate::graph::{DependencyGraph, GraphError};
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 /// Type of Bazel Java target for classpath computation
@@ -13,7 +14,7 @@ pub enum TargetKind {
 }
 
 /// Type of classpath entry
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ClasspathEntryType {
     Library,
     Project,
@@ -69,6 +70,21 @@ pub struct ComputedClasspath {
     pub output_jars: Vec<String>,
 }
 
+/// Infer the target kind from a Bazel label based on naming conventions.
+pub fn infer_target_kind(label: &str) -> TargetKind {
+    let rule_name = label.rsplit(':').next().unwrap_or(label);
+    if rule_name.contains("_test") || rule_name.ends_with("Test") {
+        TargetKind::JavaTest
+    } else if rule_name.contains("_binary") || rule_name.ends_with("Binary") || rule_name == "main"
+    {
+        TargetKind::JavaBinary
+    } else if rule_name.contains("_import") || rule_name.ends_with("Import") {
+        TargetKind::JavaImport
+    } else {
+        TargetKind::JavaLibrary
+    }
+}
+
 impl ComputedClasspath {
     pub fn compute_for(
         graph: &DependencyGraph,
@@ -87,6 +103,88 @@ impl ComputedClasspath {
                 Self::compute_for_library(graph, target_label, is_test, workspace_root)
             }
         }
+    }
+
+    /// Compute a merged classpath for multiple targets, deduplicating entries by
+    /// `(entry_type, path)` and resolving conflicts across targets.
+    pub fn compute_for_targets(
+        graph: &DependencyGraph,
+        labels: &[&str],
+        workspace_root: Option<&str>,
+    ) -> Result<Self, GraphError> {
+        if labels.is_empty() {
+            return Ok(ComputedClasspath {
+                target_label: String::new(),
+                entries: Vec::new(),
+                source_roots: Vec::new(),
+                generated_source_dirs: Vec::new(),
+                annotation_processors: Vec::new(),
+                output_jars: Vec::new(),
+            });
+        }
+
+        if labels.len() == 1 {
+            let kind = infer_target_kind(labels[0]);
+            return Self::compute_for(graph, labels[0], kind, workspace_root);
+        }
+
+        let mut merged: IndexMap<(ClasspathEntryType, String), ClasspathEntry> = IndexMap::new();
+        let mut all_output_jars = Vec::new();
+
+        for &label in labels {
+            let kind = infer_target_kind(label);
+            let cp = match Self::compute_for(graph, label, kind, workspace_root) {
+                Ok(cp) => cp,
+                Err(e) => {
+                    log::warn!("Skipping target '{}' during merge: {}", label, e);
+                    continue;
+                }
+            };
+
+            all_output_jars.extend(cp.output_jars);
+
+            for entry in cp.entries {
+                let key = (entry.entry_type.clone(), entry.path.clone());
+                merged
+                    .entry(key)
+                    .and_modify(|existing| {
+                        if existing.source_attachment_path.is_none()
+                            && entry.source_attachment_path.is_some()
+                        {
+                            existing.source_attachment_path =
+                                entry.source_attachment_path.clone();
+                        }
+                        if existing.is_test && !entry.is_test {
+                            existing.is_test = false;
+                        }
+                        if !existing.is_exported && entry.is_exported {
+                            existing.is_exported = true;
+                        }
+                        for rule in &entry.access_rules {
+                            if !existing
+                                .access_rules
+                                .iter()
+                                .any(|r| r.pattern == rule.pattern)
+                            {
+                                existing.access_rules.push(rule.clone());
+                            }
+                        }
+                    })
+                    .or_insert(entry);
+            }
+        }
+
+        all_output_jars.sort();
+        all_output_jars.dedup();
+
+        Ok(ComputedClasspath {
+            target_label: labels.join("+"),
+            entries: merged.into_values().collect(),
+            source_roots: Vec::new(),
+            generated_source_dirs: Vec::new(),
+            annotation_processors: Vec::new(),
+            output_jars: all_output_jars,
+        })
     }
 
     fn compute_for_library(
@@ -971,6 +1069,208 @@ mod tests {
             runtime_deps: Vec::new(),
             exports: Vec::new(),
         }
+    }
+
+    // --- infer_target_kind tests (moved from jni_exports.rs) ---
+
+    #[test]
+    fn test_infer_target_kind_library() {
+        assert_eq!(infer_target_kind("//foo:utils"), TargetKind::JavaLibrary);
+        assert_eq!(infer_target_kind("//app:app_lib"), TargetKind::JavaLibrary);
+        assert_eq!(infer_target_kind("//pkg:Greeter"), TargetKind::JavaLibrary);
+    }
+
+    #[test]
+    fn test_infer_target_kind_test() {
+        assert_eq!(infer_target_kind("//foo:my_test"), TargetKind::JavaTest);
+        assert_eq!(infer_target_kind("//foo:GreeterTest"), TargetKind::JavaTest);
+        assert_eq!(
+            infer_target_kind("//foo:integration_test"),
+            TargetKind::JavaTest
+        );
+    }
+
+    #[test]
+    fn test_infer_target_kind_binary() {
+        assert_eq!(infer_target_kind("//foo:my_binary"), TargetKind::JavaBinary);
+        assert_eq!(infer_target_kind("//foo:AppBinary"), TargetKind::JavaBinary);
+        assert_eq!(infer_target_kind("//foo:main"), TargetKind::JavaBinary);
+    }
+
+    #[test]
+    fn test_infer_target_kind_import() {
+        assert_eq!(infer_target_kind("//foo:my_import"), TargetKind::JavaImport);
+        assert_eq!(
+            infer_target_kind("//foo:MavenImport"),
+            TargetKind::JavaImport
+        );
+    }
+
+    #[test]
+    fn test_infer_target_kind_external() {
+        assert_eq!(infer_target_kind("@maven//:guava"), TargetKind::JavaLibrary);
+        assert_eq!(
+            infer_target_kind("@@rules_jvm_external~maven~maven//:com_google_guava_guava"),
+            TargetKind::JavaLibrary
+        );
+    }
+
+    // --- compute_for_targets tests ---
+
+    #[test]
+    fn test_merge_overlapping_deps() {
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target("//pkg:A", vec!["@maven//:guava", "@maven//:mongo"], vec!["/a.jar"]),
+            make_target("@maven//:guava", vec![], vec!["/guava.jar"]),
+            make_target("@maven//:mongo", vec![], vec!["/mongo.jar"]),
+            make_target("//pkg:B", vec!["@maven//:guava"], vec!["/b.jar"]),
+        ];
+        graph.populate_from_aspects(&results, Path::new("/workspace"));
+
+        let cp =
+            ComputedClasspath::compute_for_targets(&graph, &["//pkg:A", "//pkg:B"], None).unwrap();
+
+        let paths: Vec<&str> = cp
+            .entries
+            .iter()
+            .filter(|e| e.entry_type == ClasspathEntryType::Library)
+            .map(|e| e.path.as_str())
+            .collect();
+        assert!(paths.contains(&"/guava.jar"), "Expected guava.jar");
+        assert!(paths.contains(&"/mongo.jar"), "Expected mongo.jar");
+        let guava_count = paths.iter().filter(|p| **p == "/guava.jar").count();
+        assert_eq!(guava_count, 1, "guava.jar should appear exactly once");
+    }
+
+    #[test]
+    fn test_merge_source_attachment_conflict() {
+        let tmp = tempfile::tempdir().unwrap();
+        let guava_jar = tmp.path().join("guava.jar");
+        let src_jar = tmp.path().join("guava-sources.jar");
+        std::fs::File::create(&guava_jar).unwrap();
+        std::fs::File::create(&src_jar).unwrap();
+
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target("//pkg:A", vec!["@maven//:guava"], vec!["/a.jar"]),
+            make_target_with_source_jar(
+                "@maven//:guava",
+                vec![],
+                guava_jar.to_str().unwrap(),
+                src_jar.to_str().unwrap(),
+            ),
+            make_target("//pkg:B", vec!["@maven//:guava"], vec!["/b.jar"]),
+        ];
+        graph.populate_from_aspects(&results, Path::new("/workspace"));
+
+        let cp =
+            ComputedClasspath::compute_for_targets(&graph, &["//pkg:A", "//pkg:B"], None).unwrap();
+
+        let guava = cp
+            .entries
+            .iter()
+            .find(|e| e.path == guava_jar.to_str().unwrap())
+            .expect("Expected guava entry");
+        assert!(
+            guava.source_attachment_path.is_some(),
+            "Merged entry should retain source attachment"
+        );
+    }
+
+    #[test]
+    fn test_merge_is_test_conflict() {
+        let mut graph = DependencyGraph::new();
+        let mut test_target = make_target("//pkg:A_test", vec!["//lib:helpers"], vec![]);
+        test_target.kind = "java_test".to_string();
+        let mut helpers = make_target("//lib:helpers", vec![], vec!["/helpers.jar"]);
+        helpers.kind = "java_test".to_string();
+        let results = vec![
+            test_target,
+            helpers,
+            make_target("//pkg:B", vec!["//lib:helpers"], vec!["/b.jar"]),
+        ];
+        graph.populate_from_aspects(&results, Path::new("/workspace"));
+
+        let cp = ComputedClasspath::compute_for_targets(
+            &graph,
+            &["//pkg:A_test", "//pkg:B"],
+            None,
+        )
+        .unwrap();
+
+        let helpers_entry = cp
+            .entries
+            .iter()
+            .find(|e| e.path == "/helpers.jar")
+            .expect("Expected helpers.jar");
+        assert!(
+            !helpers_entry.is_test,
+            "Merged is_test should be false when any target uses it as non-test"
+        );
+    }
+
+    #[test]
+    fn test_merge_proj_before_lib_ordering() {
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target("//pkg:A", vec!["//lib:utils"], vec!["/a.jar"]),
+            make_target("//lib:utils", vec![], vec!["/utils.jar"]),
+            make_target("//pkg:B", vec!["//lib:utils"], vec!["/b.jar"]),
+        ];
+        graph.populate_from_aspects(&results, Path::new("/workspace"));
+
+        let cp =
+            ComputedClasspath::compute_for_targets(&graph, &["//pkg:A", "//pkg:B"], None).unwrap();
+
+        let proj_idx = cp
+            .entries
+            .iter()
+            .position(|e| e.entry_type == ClasspathEntryType::Project && e.path == "//lib:utils");
+        let lib_idx = cp
+            .entries
+            .iter()
+            .position(|e| e.entry_type == ClasspathEntryType::Library && e.path == "/utils.jar");
+
+        assert!(proj_idx.is_some(), "Expected PROJ entry for //lib:utils");
+        assert!(lib_idx.is_some(), "Expected LIB entry for /utils.jar");
+        assert!(
+            proj_idx.unwrap() < lib_idx.unwrap(),
+            "PROJ should appear before LIB in merged result"
+        );
+    }
+
+    #[test]
+    fn test_merge_single_target_passthrough() {
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target("//pkg:A", vec!["@maven//:guava"], vec!["/a.jar"]),
+            make_target("@maven//:guava", vec![], vec!["/guava.jar"]),
+        ];
+        graph.populate_from_aspects(&results, Path::new("/workspace"));
+
+        let single = ComputedClasspath::compute_for(
+            &graph,
+            "//pkg:A",
+            TargetKind::JavaLibrary,
+            None,
+        )
+        .unwrap();
+        let merged =
+            ComputedClasspath::compute_for_targets(&graph, &["//pkg:A"], None).unwrap();
+
+        assert_eq!(single.entries.len(), merged.entries.len());
+        for (s, m) in single.entries.iter().zip(merged.entries.iter()) {
+            assert_eq!(s.entry_type, m.entry_type);
+            assert_eq!(s.path, m.path);
+        }
+    }
+
+    #[test]
+    fn test_merge_empty_labels() {
+        let graph = DependencyGraph::new();
+        let cp = ComputedClasspath::compute_for_targets(&graph, &[], None).unwrap();
+        assert!(cp.entries.is_empty());
     }
 
     fn make_target_with_source_jar(

@@ -24,7 +24,51 @@ public class BazelClasspathManager {
     private static final ILog LOG = Platform.getLog(BazelClasspathManager.class);
     private static final String CONFIG_CHANGED_SENTINEL = "__CONFIG_CHANGED__";
 
-    public static void setClasspathContainer(IProject project, String targetLabel) {
+    public static void setMergedClasspathContainer(IProject project) {
+        try {
+            BazelBridge bridge = BazelBridge.getInstance();
+            if (!bridge.isInitialized()) {
+                LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                    "Bridge not initialized, using empty container for " + project.getName()));
+                JavaCore.setClasspathContainer(
+                    BazelClasspathContainer.CONTAINER_PATH,
+                    new org.eclipse.jdt.core.IJavaProject[]{JavaCore.create(project)},
+                    new IClasspathContainer[]{BazelClasspathContainer.EMPTY},
+                    null
+                );
+                return;
+            }
+            List<String> targetLabels = TargetProjectMapping.readTargets(project);
+            if (targetLabels.isEmpty()) {
+                LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                    "No target labels for project " + project.getName()));
+                return;
+            }
+            String[] labels = targetLabels.toArray(new String[0]);
+            String[] rawEntries = bridge.computeClasspathMerged(labels);
+
+            LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                "Merged classpath for project '" + project.getName() + "' ("
+                + labels.length + " targets, "
+                + (rawEntries == null ? "null" : rawEntries.length) + " entries)"));
+
+            BazelClasspathContainer container = new BazelClasspathContainer(
+                rawEntries, getTestSourcePatterns(project),
+                bridge.getDependencyResolutionMode(), project.getName());
+            TargetProjectMapping.storeCachedClasspath(project, targetLabels.get(0), rawEntries);
+            JavaCore.setClasspathContainer(
+                BazelClasspathContainer.CONTAINER_PATH,
+                new org.eclipse.jdt.core.IJavaProject[]{JavaCore.create(project)},
+                new IClasspathContainer[]{container},
+                null
+            );
+        } catch (Exception e) {
+            LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
+                "FAILED setMergedClasspathContainer for project " + project.getName() + ": " + e.getMessage(), e));
+        }
+    }
+
+    static void setClasspathContainer(IProject project, String targetLabel) {
         try {
             BazelBridge bridge = BazelBridge.getInstance();
             if (!bridge.isInitialized()) {
@@ -100,10 +144,7 @@ public class BazelClasspathManager {
                         "Nature check failed for project " + project.getName(), e));
                     continue;
                 }
-                List<String> targetLabels = TargetProjectMapping.readTargets(project);
-                for (String targetLabel : targetLabels) {
-                    setClasspathContainer(project, targetLabel);
-                }
+                setMergedClasspathContainer(project);
             }
         } catch (Exception e) {
             LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
@@ -123,8 +164,8 @@ public class BazelClasspathManager {
             
             for (IProject project : projects) {
                 List<String> targetLabels = extractTargetLabels(project, changedFiles);
-                for (String targetLabel : targetLabels) {
-                    setClasspathContainer(project, targetLabel);
+                if (!targetLabels.isEmpty()) {
+                    setMergedClasspathContainer(project);
                 }
             }
         } catch (Exception e) {
@@ -154,13 +195,16 @@ public class BazelClasspathManager {
                 }
             }
 
-            // Refresh only affected targets
+            // Collect affected projects and refresh each once with merged classpath
+            Set<IProject> affectedProjects = new LinkedHashSet<>();
             for (String targetLabel : targetLabels) {
                 IProject project = targetToProject.get(targetLabel);
                 if (project != null && project.isOpen()) {
-                    setClasspathContainer(project, targetLabel);
+                    affectedProjects.add(project);
                 }
-                // If target not found in any project, skip silently
+            }
+            for (IProject project : affectedProjects) {
+                setMergedClasspathContainer(project);
             }
         } catch (Exception e) {
             LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",

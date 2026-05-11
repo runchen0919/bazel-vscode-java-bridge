@@ -59,9 +59,7 @@ public class BazelClasspathContainerInitializer extends ClasspathContainerInitia
             );
             return;
         } else {
-            for (String label : targetLabels) {
-                BazelClasspathManager.setClasspathContainer(project.getProject(), label);
-            }
+            BazelClasspathManager.setMergedClasspathContainer(project.getProject());
         }
     }
 
@@ -72,35 +70,34 @@ public class BazelClasspathContainerInitializer extends ClasspathContainerInitia
                 + " — skipping container initialization until import runs");
             return;
         }
-        boolean anyRecovered = false;
+        java.util.ArrayList<String> allEntries = new java.util.ArrayList<>();
         for (String label : targetLabels) {
             String[] cached = TargetProjectMapping.readCachedClasspath(project.getProject(), label);
-            if (cached != null && cached.length > 0) {
-                try {
-                    BazelClasspathContainer container = new BazelClasspathContainer(
-                        cached, Collections.emptyList(),
-                        bridge.getDependencyResolutionMode(),
-                        project.getProject().getName());
-                    JavaCore.setClasspathContainer(
-                        BazelClasspathContainer.CONTAINER_PATH,
-                        new IJavaProject[]{project},
-                        new IClasspathContainer[]{container},
-                        null
-                    );
-                    anyRecovered = true;
-                    LOG.info("Recovered classpath from cache for " + project.getProject().getName()
-                        + " / " + label + " (" + cached.length + " entries)");
-                } catch (Exception e) {
-                    LOG.warn("Failed to apply cached classpath for " + label + ": " + e.getMessage());
-                }
-            } else {
-                LOG.info("No cached classpath for " + project.getProject().getName()
-                    + " / " + label + " — will resolve after import");
+            if (cached != null) {
+                Collections.addAll(allEntries, cached);
             }
         }
-        if (!anyRecovered) {
+        if (allEntries.isEmpty()) {
             LOG.info("No cached classpath for " + project.getProject().getName()
                 + " — skipping until import provides entries");
+            return;
+        }
+        try {
+            BazelClasspathContainer container = new BazelClasspathContainer(
+                allEntries.toArray(new String[0]), Collections.emptyList(),
+                bridge.getDependencyResolutionMode(),
+                project.getProject().getName());
+            JavaCore.setClasspathContainer(
+                BazelClasspathContainer.CONTAINER_PATH,
+                new IJavaProject[]{project},
+                new IClasspathContainer[]{container},
+                null
+            );
+            LOG.info("Recovered merged classpath from cache for " + project.getProject().getName()
+                + " (" + targetLabels.size() + " targets, " + allEntries.size() + " entries)");
+        } catch (Exception e) {
+            LOG.warn("Failed to apply cached classpath for " + project.getProject().getName()
+                + ": " + e.getMessage());
         }
     }
 

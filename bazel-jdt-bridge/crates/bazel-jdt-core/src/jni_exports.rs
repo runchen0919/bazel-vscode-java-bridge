@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use bazel_graph::TargetKind;
+use bazel_graph::infer_target_kind;
 use jni::objects::{JClass, JObject, JObjectArray, JString};
 use jni::sys::{jint, jlong, jobjectArray, jsize};
 use jni::JNIEnv;
@@ -560,6 +560,79 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeComputeClasspath(
 }
 
 #[no_mangle]
+pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeComputeClasspathMerged(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    labels: JObjectArray,
+) -> jobjectArray {
+    let state = match get_state(&mut env, handle) {
+        Some(s) => s,
+        None => return std::ptr::null_mut(),
+    };
+
+    let len = match env.get_array_length(&labels) {
+        Ok(l) => l,
+        Err(_) => {
+            let _ = env.throw_new("java/lang/IllegalArgumentException", "Invalid labels array");
+            return std::ptr::null_mut();
+        }
+    };
+
+    if len == 0 {
+        return match create_string_array(&mut env, &[]) {
+            Ok(arr) => arr,
+            Err(_) => std::ptr::null_mut(),
+        };
+    }
+
+    let mut label_strings = Vec::with_capacity(len as usize);
+    for i in 0..len {
+        let s = env
+            .get_object_array_element(&labels, i)
+            .ok()
+            .and_then(|obj| {
+                let jstr = JString::from(obj);
+                env.get_string(&jstr).ok().map(String::from)
+            });
+        if let Some(s) = s {
+            label_strings.push(bazel_graph::normalize_label(&s));
+        }
+    }
+
+    let label_refs: Vec<&str> = label_strings.iter().map(|s| s.as_str()).collect();
+
+    let graph = state.graph.lock().unwrap_or_else(|e| e.into_inner());
+    match bazel_graph::ComputedClasspath::compute_for_targets(
+        &graph,
+        &label_refs,
+        Some(state.workspace_root.to_str().unwrap_or("")),
+    ) {
+        Ok(computed) => {
+            let entries = computed.to_pipe_delimited_entries();
+            log::debug!(
+                "[bazel-jdt] nativeComputeClasspathMerged {} targets -> {} entries",
+                label_strings.len(),
+                entries.len()
+            );
+            drop(graph);
+            match create_string_array(&mut env, &entries) {
+                Ok(arr) => arr,
+                Err(_) => std::ptr::null_mut(),
+            }
+        }
+        Err(e) => {
+            drop(graph);
+            let _ = env.throw_new(
+                "java/lang/RuntimeException",
+                format!("Merged classpath computation failed: {}", e),
+            );
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[no_mangle]
 pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeGetSyncState(
     mut env: JNIEnv,
     _class: JClass,
@@ -704,20 +777,6 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeSyncIncremental(
     }
 }
 
-fn infer_target_kind(label: &str) -> TargetKind {
-    let rule_name = label.rsplit(':').next().unwrap_or(label);
-    if rule_name.contains("_test") || rule_name.ends_with("Test") {
-        TargetKind::JavaTest
-    } else if rule_name.contains("_binary") || rule_name.ends_with("Binary") || rule_name == "main"
-    {
-        TargetKind::JavaBinary
-    } else if rule_name.contains("_import") || rule_name.ends_with("Import") {
-        TargetKind::JavaImport
-    } else {
-        TargetKind::JavaLibrary
-    }
-}
-
 fn run_full_resolution(
     state: &BazelJdtState,
     target_label: &str,
@@ -772,49 +831,3 @@ fn run_full_resolution(
     .map_err(|e| format!("Graph computation failed: {}", e))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_infer_target_kind_library() {
-        assert_eq!(infer_target_kind("//foo:utils"), TargetKind::JavaLibrary);
-        assert_eq!(infer_target_kind("//app:app_lib"), TargetKind::JavaLibrary);
-        assert_eq!(infer_target_kind("//pkg:Greeter"), TargetKind::JavaLibrary);
-    }
-
-    #[test]
-    fn test_infer_target_kind_test() {
-        assert_eq!(infer_target_kind("//foo:my_test"), TargetKind::JavaTest);
-        assert_eq!(infer_target_kind("//foo:GreeterTest"), TargetKind::JavaTest);
-        assert_eq!(
-            infer_target_kind("//foo:integration_test"),
-            TargetKind::JavaTest
-        );
-    }
-
-    #[test]
-    fn test_infer_target_kind_binary() {
-        assert_eq!(infer_target_kind("//foo:my_binary"), TargetKind::JavaBinary);
-        assert_eq!(infer_target_kind("//foo:AppBinary"), TargetKind::JavaBinary);
-        assert_eq!(infer_target_kind("//foo:main"), TargetKind::JavaBinary);
-    }
-
-    #[test]
-    fn test_infer_target_kind_import() {
-        assert_eq!(infer_target_kind("//foo:my_import"), TargetKind::JavaImport);
-        assert_eq!(
-            infer_target_kind("//foo:MavenImport"),
-            TargetKind::JavaImport
-        );
-    }
-
-    #[test]
-    fn test_infer_target_kind_external() {
-        assert_eq!(infer_target_kind("@maven//:guava"), TargetKind::JavaLibrary);
-        assert_eq!(
-            infer_target_kind("@@rules_jvm_external~maven~maven//:com_google_guava_guava"),
-            TargetKind::JavaLibrary
-        );
-    }
-}

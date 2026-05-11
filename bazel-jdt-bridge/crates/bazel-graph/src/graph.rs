@@ -206,14 +206,28 @@ impl DependencyGraph {
                 let mut jars: Vec<String> = java_info
                     .jars
                     .iter()
-                    .filter_map(|j| j.jar.best_path())
+                    .filter_map(|j| {
+                        let path = j.jar.best_path()?;
+                        Some(if j.jar.is_source {
+                            resolve_external_path(&path, workspace_root).unwrap_or(path)
+                        } else {
+                            path
+                        })
+                    })
                     .collect();
 
                 if jars.is_empty() {
                     jars = java_info
                         .compile_jars
                         .iter()
-                        .filter_map(|j| j.best_path())
+                        .filter_map(|j| {
+                            let path = j.best_path()?;
+                            Some(if j.is_source {
+                                resolve_external_path(&path, workspace_root).unwrap_or(path)
+                            } else {
+                                path
+                            })
+                        })
                         .collect();
                 }
 
@@ -227,8 +241,13 @@ impl DependencyGraph {
                         jar_info.jar.best_path(),
                         jar_info.source_jar.as_ref().and_then(|s| s.best_path()),
                     ) {
-                        let resolved_src =
-                            resolve_external_path(&src_path, workspace_root).unwrap_or(src_path);
+                        let src_is_source =
+                            jar_info.source_jar.as_ref().map_or(true, |s| s.is_source);
+                        let resolved_src = if src_is_source {
+                            resolve_external_path(&src_path, workspace_root).unwrap_or(src_path)
+                        } else {
+                            src_path
+                        };
                         source_map.insert(bin_path, resolved_src);
                     }
                 }
@@ -240,11 +259,13 @@ impl DependencyGraph {
                         .source_jars
                         .iter()
                         .filter_map(|s| {
-                            s.best_path().map(|p| {
-                                let resolved =
-                                    resolve_external_path(&p, workspace_root).unwrap_or(p);
-                                (parent_key(&resolved), resolved)
-                            })
+                            let p = s.best_path()?;
+                            let resolved = if s.is_source {
+                                resolve_external_path(&p, workspace_root).unwrap_or(p)
+                            } else {
+                                p
+                            };
+                            Some((parent_key(&resolved), resolved))
                         })
                         .collect();
 
@@ -1554,5 +1575,250 @@ mod tests {
         assert!(packages.contains(&"common".to_string()));
         assert!(packages.contains(&"utils".to_string()));
         assert!(packages.contains(&"service".to_string()));
+    }
+
+    #[test]
+    fn test_populate_resolves_external_binary_jar_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        // Simulate execroot at <tmp>/execroot with bazel-out symlinked
+        let execroot = tmp.path().join("execroot");
+        std::fs::create_dir_all(&execroot).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        // Create bazel-out inside execroot, then symlink from workspace
+        let real_bazel_out = execroot.join("bazel-out");
+        std::fs::create_dir_all(&real_bazel_out).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_bazel_out, workspace.join("bazel-out")).unwrap();
+        // Create the external JAR at the execroot location
+        let jar_dir = execroot.join("external/org_example/jar");
+        std::fs::create_dir_all(&jar_dir).unwrap();
+        std::fs::File::create(jar_dir.join("downloaded.jar")).unwrap();
+
+        // Aspect provides a stale path pointing to workspace/external/...
+        let stale_path = format!(
+            "{}/external/org_example/jar/downloaded.jar",
+            workspace.display()
+        );
+        let mut graph = DependencyGraph::new();
+        let results = vec![TargetIdeInfo {
+            label: "//app:app".to_string(),
+            kind: "java_library".to_string(),
+            build_file: None,
+            java_info: Some(JavaIdeInfo {
+                jars: vec![JarInfo {
+                    jar: ArtifactLocation {
+                        absolute_path: Some(stale_path),
+                        is_source: true,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            deps: vec![],
+            runtime_deps: Vec::new(),
+            exports: Vec::new(),
+        }];
+        graph.populate_from_aspects(&results, &workspace);
+
+        let jars = graph.get_target_jars("//app:app").unwrap();
+        assert_eq!(jars.len(), 1);
+        let resolved = &jars[0];
+        assert!(
+            resolved.contains("/execroot/external/org_example/jar/downloaded.jar"),
+            "Expected JAR resolved to execroot, got: {}",
+            resolved
+        );
+    }
+
+    #[test]
+    fn test_populate_does_not_modify_non_external_jar_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        // No bazel-out symlink — resolve_external_path will return None
+
+        let jar_path = "/some/bazel-out/k8-fastbuild/bin/lib/libfoo.jar".to_string();
+        let mut graph = DependencyGraph::new();
+        let results = vec![TargetIdeInfo {
+            label: "//lib:foo".to_string(),
+            kind: "java_library".to_string(),
+            build_file: None,
+            java_info: Some(JavaIdeInfo {
+                jars: vec![JarInfo {
+                    jar: ArtifactLocation {
+                        absolute_path: Some(jar_path.clone()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            deps: vec![],
+            runtime_deps: Vec::new(),
+            exports: Vec::new(),
+        }];
+        graph.populate_from_aspects(&results, &workspace);
+
+        let jars = graph.get_target_jars("//lib:foo").unwrap();
+        assert_eq!(jars.len(), 1);
+        assert_eq!(
+            jars[0], jar_path,
+            "Non-external JAR path should remain unchanged"
+        );
+    }
+
+    #[test]
+    fn test_populate_preserves_jar_path_when_bazel_out_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        // No bazel-out symlink — canonicalize will fail, resolve_external_path returns None
+
+        let stale_path = format!(
+            "{}/external/org_example/jar/downloaded.jar",
+            workspace.display()
+        );
+        let mut graph = DependencyGraph::new();
+        let results = vec![TargetIdeInfo {
+            label: "//app:app".to_string(),
+            kind: "java_library".to_string(),
+            build_file: None,
+            java_info: Some(JavaIdeInfo {
+                jars: vec![JarInfo {
+                    jar: ArtifactLocation {
+                        absolute_path: Some(stale_path.clone()),
+                        is_source: true,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            deps: vec![],
+            runtime_deps: Vec::new(),
+            exports: Vec::new(),
+        }];
+        graph.populate_from_aspects(&results, &workspace);
+
+        let jars = graph.get_target_jars("//app:app").unwrap();
+        assert_eq!(jars.len(), 1);
+        assert_eq!(
+            jars[0], stale_path,
+            "Original path should be preserved when resolve_external_path returns None"
+        );
+    }
+
+    #[test]
+    fn test_derived_artifact_jar_preserves_bazel_out_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        // Create bazel-out symlink so resolve_external_path would work if called
+        let execroot = tmp.path().join("execroot");
+        std::fs::create_dir_all(&execroot).unwrap();
+        let real_bazel_out = execroot.join("bazel-out");
+        std::fs::create_dir_all(&real_bazel_out).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_bazel_out, workspace.join("bazel-out")).unwrap();
+
+        // Derived artifact path with bazel-out/<config>/bin/ prefix
+        let derived_path = format!(
+            "{}/bazel-out/k8-fastbuild/bin/external/maven/v1/https/repo/com/example/artifact-1.0.jar",
+            workspace.display()
+        );
+        let mut graph = DependencyGraph::new();
+        let results = vec![TargetIdeInfo {
+            label: "//app:app".to_string(),
+            kind: "java_library".to_string(),
+            build_file: None,
+            java_info: Some(JavaIdeInfo {
+                jars: vec![JarInfo {
+                    jar: ArtifactLocation {
+                        absolute_path: Some(derived_path.clone()),
+                        is_source: false,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            deps: vec![],
+            runtime_deps: Vec::new(),
+            exports: Vec::new(),
+        }];
+        graph.populate_from_aspects(&results, &workspace);
+
+        let jars = graph.get_target_jars("//app:app").unwrap();
+        assert_eq!(jars.len(), 1);
+        assert_eq!(
+            jars[0], derived_path,
+            "Derived artifact path should be preserved without resolve_external_path mangling"
+        );
+        assert!(
+            jars[0].contains("bazel-out/k8-fastbuild/bin/external/maven"),
+            "bazel-out/<config>/bin/ prefix must be retained, got: {}",
+            jars[0]
+        );
+    }
+
+    #[test]
+    fn test_derived_source_attachment_not_resolved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let execroot = tmp.path().join("execroot");
+        std::fs::create_dir_all(&execroot).unwrap();
+        let real_bazel_out = execroot.join("bazel-out");
+        std::fs::create_dir_all(&real_bazel_out).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_bazel_out, workspace.join("bazel-out")).unwrap();
+
+        let bin_path = format!(
+            "{}/bazel-out/k8-fastbuild/bin/external/maven/v1/artifact-1.0.jar",
+            workspace.display()
+        );
+        let src_path = format!(
+            "{}/bazel-out/k8-fastbuild/bin/external/maven/v1/artifact-1.0-sources.jar",
+            workspace.display()
+        );
+        let mut graph = DependencyGraph::new();
+        let results = vec![TargetIdeInfo {
+            label: "//app:app".to_string(),
+            kind: "java_library".to_string(),
+            build_file: None,
+            java_info: Some(JavaIdeInfo {
+                jars: vec![JarInfo {
+                    jar: ArtifactLocation {
+                        absolute_path: Some(bin_path.clone()),
+                        is_source: false,
+                        ..Default::default()
+                    },
+                    source_jar: Some(ArtifactLocation {
+                        absolute_path: Some(src_path.clone()),
+                        is_source: false,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            deps: vec![],
+            runtime_deps: Vec::new(),
+            exports: Vec::new(),
+        }];
+        graph.populate_from_aspects(&results, &workspace);
+
+        let resolved_src = graph.get_target_source_jar("//app:app", &bin_path).unwrap();
+        assert_eq!(
+            resolved_src, src_path,
+            "Derived source attachment should not be resolved via resolve_external_path"
+        );
+        assert!(
+            resolved_src.contains("bazel-out/k8-fastbuild/bin/external/maven"),
+            "bazel-out prefix must be retained in source attachment, got: {}",
+            resolved_src
+        );
     }
 }

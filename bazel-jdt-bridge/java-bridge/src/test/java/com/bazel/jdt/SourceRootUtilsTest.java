@@ -157,6 +157,59 @@ public class SourceRootUtilsTest {
         assertEquals("_src_java", SourceRootUtils.linkedFolderName(sourceRoot));
     }
 
+    // --- recursive source root inference tests ---
+
+    @Test
+    public void inferSourceRoot_subdirectoryOnlyPackage() throws IOException {
+        writeJavaFile("src/java/com/urbancompass/auth/authenticators/impl/AuthzAuthenticator.java",
+            "package com.urbancompass.auth.authenticators.impl;\n\npublic class AuthzAuthenticator {}");
+        writeJavaFile("src/java/com/urbancompass/auth/annotation/Secured.java",
+            "package com.urbancompass.auth.annotation;\n\npublic @interface Secured {}");
+        new File(tmp.getRoot(), "src/java/com/urbancompass/auth").mkdirs();
+        String result = SourceRootUtils.inferSourceRoot(
+            tmp.getRoot().getAbsolutePath(), "src/java/com/urbancompass/auth");
+        assertEquals("src/java", result);
+    }
+
+    @Test
+    public void inferSourceRoot_emptyPackageNoJavaAnywhere() throws IOException {
+        new File(tmp.getRoot(), "src/java/com/urbancompass/empty/subdir").mkdirs();
+        String result = SourceRootUtils.inferSourceRoot(
+            tmp.getRoot().getAbsolutePath(), "src/java/com/urbancompass/empty");
+        assertNull(result);
+    }
+
+    @Test
+    public void inferSourceRoot_beyondMaxDepth() throws IOException {
+        String deepPath = "src/java/com/example/pkg/a/b/c/d/e/f/Deep.java";
+        writeJavaFile(deepPath, "package com.example.pkg.a.b.c.d.e.f;\n\nclass Deep {}");
+        new File(tmp.getRoot(), "src/java/com/example/pkg").mkdirs();
+        String result = SourceRootUtils.inferSourceRoot(
+            tmp.getRoot().getAbsolutePath(), "src/java/com/example/pkg");
+        assertNull("Files deeper than max depth should not be found", result);
+    }
+
+    @Test
+    public void inferSourceRoot_directFilesPreferred() throws IOException {
+        writeJavaFile("src/java/com/urbancompass/utils/StringUtils.java",
+            "package com.urbancompass.utils;\n\npublic class StringUtils {}");
+        writeJavaFile("src/java/com/urbancompass/utils/internal/Helper.java",
+            "package com.urbancompass.utils.internal;\n\nclass Helper {}");
+        String result = SourceRootUtils.inferSourceRoot(
+            tmp.getRoot().getAbsolutePath(), "src/java/com/urbancompass/utils");
+        assertEquals("src/java", result);
+    }
+
+    @Test
+    public void inferSourceRoot_inconsistentSubdirPackage() throws IOException {
+        writeJavaFile("src/java/com/urbancompass/broken/sub/Misplaced.java",
+            "package com.completely.different;\n\nclass Misplaced {}");
+        new File(tmp.getRoot(), "src/java/com/urbancompass/broken").mkdirs();
+        String result = SourceRootUtils.inferSourceRoot(
+            tmp.getRoot().getAbsolutePath(), "src/java/com/urbancompass/broken");
+        assertNull("Inconsistent package declaration should return null", result);
+    }
+
     @Test
     public void mavenLayoutNotTriggeredByInference() throws IOException {
         writeJavaFile("pkg/src/main/java/com/example/App.java",

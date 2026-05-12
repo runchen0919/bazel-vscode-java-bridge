@@ -25,6 +25,8 @@ public final class SourceRootUtils {
     private static final Pattern PACKAGE_PATTERN = Pattern.compile(
         "^\\s*package\\s+([a-zA-Z_][a-zA-Z0-9_.]*?)\\s*;");
 
+    private static final int MAX_RECURSIVE_DEPTH = 5;
+
     private SourceRootUtils() {}
 
     public static String extractPackageDeclaration(File javaFile) {
@@ -63,6 +65,10 @@ public final class SourceRootUtils {
 
         File[] javaFiles = packageDir.listFiles((dir, name) -> name.endsWith(".java"));
         if (javaFiles == null || javaFiles.length == 0) {
+            File found = findJavaFileRecursive(packageDir, MAX_RECURSIVE_DEPTH);
+            if (found != null) {
+                return inferSourceRootFromFile(workspacePath, packagePath, found);
+            }
             return null;
         }
 
@@ -97,6 +103,72 @@ public final class SourceRootUtils {
 
         LOG.warning("Package declaration '" + packageDecl + "' does not match directory structure for " + packagePath);
         return null;
+    }
+
+    private static File findJavaFileRecursive(File dir, int maxDepth) {
+        if (maxDepth <= 0) {
+            return null;
+        }
+        File[] children = dir.listFiles();
+        if (children == null) {
+            return null;
+        }
+        java.util.Arrays.sort(children, java.util.Comparator.comparing(File::getName));
+        for (File child : children) {
+            if (child.isFile() && child.getName().endsWith(".java")) {
+                return child;
+            }
+        }
+        for (File child : children) {
+            if (child.isDirectory()) {
+                File found = findJavaFileRecursive(child, maxDepth - 1);
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static String inferSourceRootFromFile(String workspacePath, String packagePath, File javaFile) {
+        String packageDecl = extractPackageDeclaration(javaFile);
+        if (packageDecl.isEmpty()) {
+            return null;
+        }
+
+        String declPath = packageDecl.replace('.', '/');
+
+        String fileParent = javaFile.getParentFile().getAbsolutePath();
+        String wsPrefix = workspacePath.endsWith(File.separator) ? workspacePath : workspacePath + File.separator;
+        if (!fileParent.startsWith(wsPrefix)) {
+            return null;
+        }
+        String relativeParent = fileParent.substring(wsPrefix.length()).replace('\\', '/');
+
+        if (!relativeParent.endsWith(declPath)) {
+            return null;
+        }
+
+        String sourceRoot = relativeParent.substring(0, relativeParent.length() - declPath.length());
+        if (sourceRoot.endsWith("/")) {
+            sourceRoot = sourceRoot.substring(0, sourceRoot.length() - 1);
+        }
+        if (sourceRoot.isEmpty()) {
+            return null;
+        }
+
+        String packageDirPath = packagePath.replace('\\', '/');
+        if (!packageDirPath.startsWith(sourceRoot + "/")) {
+            return null;
+        }
+
+        File sourceRootDir = new File(workspacePath, sourceRoot);
+        if (!sourceRootDir.isDirectory()) {
+            LOG.warning("Inferred source root '" + sourceRoot + "' does not exist for package " + packagePath);
+            return null;
+        }
+
+        return sourceRoot;
     }
 
     static String linkedFolderName(String sourceRoot) {

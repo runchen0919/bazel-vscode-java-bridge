@@ -3,12 +3,9 @@ package com.bazel.jdt;
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.ILog;
-import org.eclipse.core.runtime.IPath;
 import org.eclipse.core.runtime.IStatus;
-import org.eclipse.core.runtime.Path;
 import org.eclipse.core.runtime.Platform;
 import org.eclipse.core.runtime.Status;
-import org.eclipse.jdt.core.ClasspathContainerInitializer;
 import org.eclipse.jdt.core.IClasspathContainer;
 import org.eclipse.jdt.core.JavaCore;
 
@@ -23,6 +20,7 @@ import java.util.Set;
 public class BazelClasspathManager {
     private static final ILog LOG = Platform.getLog(BazelClasspathManager.class);
     private static final String CONFIG_CHANGED_SENTINEL = "__CONFIG_CHANGED__";
+    private static final int BATCH_SIZE = 50;
 
     public static void setMergedClasspathContainer(IProject project) {
         try {
@@ -46,11 +44,6 @@ public class BazelClasspathManager {
             }
             String[] labels = targetLabels.toArray(new String[0]);
             String[] rawEntries = bridge.computeClasspathMerged(labels);
-
-            LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
-                "Merged classpath for project '" + project.getName() + "' ("
-                + labels.length + " targets, "
-                + (rawEntries == null ? "null" : rawEntries.length) + " entries)"));
 
             BazelClasspathContainer container = new BazelClasspathContainer(
                 rawEntries, getTestSourcePatterns(project),
@@ -101,14 +94,6 @@ public class BazelClasspathManager {
                 }
             }
 
-            StringBuilder sb = new StringBuilder();
-            sb.append("Classpath for '").append(targetLabel).append("' (").append(rawEntries == null ? "null" : rawEntries.length).append(" entries):");
-            if (rawEntries != null) {
-                for (String e : rawEntries) {
-                    sb.append("\n  ").append(e);
-                }
-            }
-            LOG.log(new Status(IStatus.INFO, "com.bazel.jdt", sb.toString()));
             BazelClasspathContainer container = new BazelClasspathContainer(
                 rawEntries, getTestSourcePatterns(project),
                 bridge.getDependencyResolutionMode(), project.getName());
@@ -135,6 +120,7 @@ public class BazelClasspathManager {
                 org.eclipse.core.resources.ResourcesPlugin.getWorkspace();
             IProject[] projects = workspace.getRoot().getProjects();
 
+            List<IProject> eligible = new ArrayList<>();
             for (IProject project : projects) {
                 if (!project.isOpen()) continue;
                 try {
@@ -144,8 +130,32 @@ public class BazelClasspathManager {
                         "Nature check failed for project " + project.getName(), e));
                     continue;
                 }
-                setMergedClasspathContainer(project);
+                eligible.add(project);
             }
+
+            int total = eligible.size();
+            int totalBatches = (total + BATCH_SIZE - 1) / BATCH_SIZE;
+            long startTime = System.currentTimeMillis();
+
+            for (int i = 0; i < total; i += BATCH_SIZE) {
+                int batchNum = (i / BATCH_SIZE) + 1;
+                int end = Math.min(i + BATCH_SIZE, total);
+                LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                    "Resolving classpath batch " + batchNum + "/" + totalBatches
+                    + " (projects " + (i + 1) + "-" + end + " of " + total + ")"));
+
+                for (int j = i; j < end; j++) {
+                    setMergedClasspathContainer(eligible.get(j));
+                }
+
+                if (end < total) {
+                    Thread.yield();
+                }
+            }
+
+            long elapsed = System.currentTimeMillis() - startTime;
+            LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                "Classpath resolution complete: " + total + " projects in " + elapsed + "ms"));
         } catch (Exception e) {
             LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
                 "Failed to refresh classpath", e));

@@ -93,8 +93,6 @@ public class BazelClasspathContainerInitializer extends ClasspathContainerInitia
                 new IClasspathContainer[]{container},
                 null
             );
-            LOG.info("Recovered merged classpath from cache for " + project.getProject().getName()
-                + " (" + targetLabels.size() + " targets, " + allEntries.size() + " entries)");
         } catch (Exception e) {
             LOG.warn("Failed to apply cached classpath for " + project.getProject().getName()
                 + ": " + e.getMessage());

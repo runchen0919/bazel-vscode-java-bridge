@@ -7,6 +7,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 public final class BazelBridge {
     private static final BazelBridge INSTANCE = new BazelBridge();
     private static final long JNI_TIMEOUT_SECONDS = 330;
+    private static final long DISCOVER_TIMEOUT_SECONDS = 1800;
     private long handle = -1;
     private final ReentrantReadWriteLock rwLock = new ReentrantReadWriteLock();
     private volatile ExecutorService jniExecutor = createExecutor();
@@ -81,28 +82,65 @@ public final class BazelBridge {
         }
     }
 
-    public String[] discoverTargets() {
-        return discoverTargets(null);
-    }
-
     public String[] discoverTargets(String[] scopePatterns) {
         return discoverTargets(scopePatterns, null);
     }
 
     public String[] discoverTargets(String[] scopePatterns, String[] buildFlags) {
+        String[] targets = queryTargets(scopePatterns);
+        if (targets == null || targets.length == 0) return targets;
+        populateGraph();
+        return runAspectBuild(targets, buildFlags);
+    }
+
+    public String[] queryTargets(String[] scopePatterns) {
         long h = snapshotHandle();
         try {
-            return jniExecutor.submit(() -> nativeDiscoverTargets(h, scopePatterns, buildFlags))
-                .get(JNI_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            return jniExecutor.submit(() -> nativeQueryTargets(h, scopePatterns))
+                .get(DISCOVER_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new RuntimeException("Interrupted during discoverTargets", e);
+            throw new RuntimeException("Interrupted during queryTargets", e);
         } catch (ExecutionException e) {
             Throwable cause = e.getCause();
             if (cause instanceof RuntimeException) throw (RuntimeException) cause;
-            throw new RuntimeException("discoverTargets failed", cause);
+            throw new RuntimeException("queryTargets failed", cause);
         } catch (TimeoutException e) {
-            throw new RuntimeException("discoverTargets timed out", e);
+            throw new RuntimeException("queryTargets timed out", e);
+        }
+    }
+
+    public void populateGraph() {
+        long h = snapshotHandle();
+        try {
+            jniExecutor.submit(() -> { nativePopulateGraph(h); return null; })
+                .get(DISCOVER_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted during populateGraph", e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException) throw (RuntimeException) cause;
+            throw new RuntimeException("populateGraph failed", cause);
+        } catch (TimeoutException e) {
+            throw new RuntimeException("populateGraph timed out", e);
+        }
+    }
+
+    public String[] runAspectBuild(String[] targets, String[] buildFlags) {
+        long h = snapshotHandle();
+        try {
+            return jniExecutor.submit(() -> nativeRunAspectBuild(h, targets, buildFlags))
+                .get(DISCOVER_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted during runAspectBuild", e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException) throw (RuntimeException) cause;
+            throw new RuntimeException("runAspectBuild failed", cause);
+        } catch (TimeoutException e) {
+            throw new RuntimeException("runAspectBuild timed out", e);
         }
     }
 
@@ -286,7 +324,9 @@ public final class BazelBridge {
     private native long nativeInitialize(String workspacePath, String bazelPath, String cacheDir);
     private native void nativeShutdown(long handle);
     private native void nativeUpdateWatchPaths(long handle, String[] watchPaths);
-    private native String[] nativeDiscoverTargets(long handle, String[] scopePatterns, String[] buildFlags);
+    private native String[] nativeQueryTargets(long handle, String[] scopePatterns);
+    private native void nativePopulateGraph(long handle);
+    private native String[] nativeRunAspectBuild(long handle, String[] targets, String[] buildFlags);
     private native String[] nativeComputeClasspath(long handle, String targetLabel, String[] buildFlags);
     private native String[] nativeComputeClasspathMerged(long handle, String[] labels);
     private native int nativeGetSyncState(long handle);
@@ -294,4 +334,11 @@ public final class BazelBridge {
     private native String[] nativeGetPendingChanges(long handle);
     private native String[] nativeGetTransitiveWorkspaceDeps(long handle, String[] targetLabels);
     private native String[] nativeSyncIncremental(long handle, String[] changedFilePaths);
+    private native String nativeGetAspectBuildStats(long handle);
+
+    public String getAspectBuildStats() {
+        long h = snapshotHandleNullable();
+        if (h == -1) return null;
+        return nativeGetAspectBuildStats(h);
+    }
 }

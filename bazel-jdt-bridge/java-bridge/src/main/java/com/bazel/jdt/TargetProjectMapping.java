@@ -46,46 +46,75 @@ public final class TargetProjectMapping {
         return new QualifiedName(QUALIFIER, KEY);
     }
 
-    /**
-     * Store target labels for a project, replacing any existing mapping.
-     *
-     * @param project      the Eclipse project
-     * @param targetLabels list of concrete Bazel target labels (e.g. "//app:lib")
-     */
+    private static Path getTargetLabelsDir() throws IOException {
+        Bundle bundle = Platform.getBundle("com.bazel.jdt");
+        Path stateDir = Platform.getStateLocation(bundle).toFile().toPath();
+        Path labelsDir = stateDir.resolve("target-labels");
+        Files.createDirectories(labelsDir);
+        return labelsDir;
+    }
+
+    private static Path getTargetLabelsFile(String projectName) throws IOException {
+        return getTargetLabelsDir().resolve(sanitizeLabel(projectName));
+    }
+
     public static void storeTargets(IProject project, List<String> targetLabels) {
         try {
-            String value = String.join(",", targetLabels);
-            project.setPersistentProperty(propertyName(), value);
-            LOG.info("Stored target labels for project '" + project.getName() + "': " + value);
-        } catch (CoreException e) {
+            Path labelsFile = getTargetLabelsFile(project.getName());
+            String value = String.join("\n", targetLabels);
+            Files.writeString(labelsFile, value);
+            LOG.info("Stored target labels for project '" + project.getName() + "': " + targetLabels.size() + " labels");
+        } catch (IOException e) {
             LOG.error("Failed to store target labels for project '" + project.getName() + "'", e);
         }
     }
 
-    /**
-     * Read the persisted target labels for a project.
-     *
-     * @param project the Eclipse project
-     * @return list of concrete Bazel target labels, or empty list if none persisted
-     */
     public static List<String> readTargets(IProject project) {
         try {
-            String value = project.getPersistentProperty(propertyName());
-            if (value == null || value.isEmpty()) {
-                return Collections.emptyList();
-            }
-            List<String> labels = new ArrayList<>();
-            for (String label : value.split(",")) {
-                String trimmed = label.trim();
-                if (!trimmed.isEmpty()) {
-                    labels.add(trimmed);
+            Path labelsFile = getTargetLabelsFile(project.getName());
+            if (Files.exists(labelsFile)) {
+                String value = Files.readString(labelsFile);
+                if (value.isEmpty()) return Collections.emptyList();
+                List<String> labels = new ArrayList<>();
+                for (String label : value.split("\n")) {
+                    String trimmed = label.trim();
+                    if (!trimmed.isEmpty()) {
+                        labels.add(trimmed);
+                    }
                 }
+                return labels;
             }
-            return labels;
-        } catch (CoreException e) {
-            LOG.error("Failed to read target labels for project '" + project.getName() + "'", e);
-            return Collections.emptyList();
+        } catch (IOException e) {
+            LOG.error("Failed to read target labels file for project '" + project.getName() + "'", e);
         }
+
+        try {
+            String value = project.getPersistentProperty(propertyName());
+            if (value != null && !value.isEmpty()) {
+                List<String> labels = new ArrayList<>();
+                for (String label : value.split(",")) {
+                    String trimmed = label.trim();
+                    if (!trimmed.isEmpty()) {
+                        labels.add(trimmed);
+                    }
+                }
+                try {
+                    Path labelsFile = getTargetLabelsFile(project.getName());
+                    Files.writeString(labelsFile, String.join("\n", labels));
+                } catch (IOException ex) {
+                    LOG.error("Failed to migrate target labels to file for '" + project.getName() + "'", ex);
+                }
+                try {
+                    project.setPersistentProperty(propertyName(), null);
+                } catch (CoreException ex) {
+                    LOG.error("Failed to clear migrated persistent property for '" + project.getName() + "'", ex);
+                }
+                return labels;
+            }
+        } catch (CoreException e) {
+            LOG.error("Failed to read target labels property for project '" + project.getName() + "'", e);
+        }
+        return Collections.emptyList();
     }
 
     /**
@@ -108,9 +137,15 @@ public final class TargetProjectMapping {
      */
     public static void clearTargets(IProject project) {
         try {
+            Path labelsFile = getTargetLabelsFile(project.getName());
+            Files.deleteIfExists(labelsFile);
+        } catch (IOException e) {
+            LOG.error("Failed to clear target labels file for project '" + project.getName() + "'", e);
+        }
+        try {
             project.setPersistentProperty(propertyName(), null);
         } catch (CoreException e) {
-            LOG.error("Failed to clear target labels for project '" + project.getName() + "'", e);
+            LOG.error("Failed to clear target labels property for project '" + project.getName() + "'", e);
         }
     }
 

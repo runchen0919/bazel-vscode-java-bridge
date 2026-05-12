@@ -148,7 +148,7 @@ impl BazelInvoker {
         }
         args.push(format!("--aspects={}", aspect_file));
         args.push("--output_groups=intellij-info-java,intellij-info-generic".to_string());
-        args.push("--show_result=100".to_string());
+        args.push("--show_result=2147483647".to_string());
         args.extend(targets.iter().cloned());
 
         let output = run_bazel_command_sync(&self.bazel_path, &self.workspace_root, &args)?;
@@ -177,10 +177,32 @@ impl BazelInvoker {
         let aspect_output =
             self.build_with_aspects_sync(targets, &self.aspect_label, build_flags)?;
 
-        let info_files = crate::output::parse_aspect_output_locations(&aspect_output);
+        log::info!("Discovering aspect output files...");
+        let mut info_files =
+            crate::output::parse_aspect_output_locations(&aspect_output);
 
+        if info_files.is_empty() {
+            log::warn!(
+                "Stderr parsing found 0 aspect outputs — \
+                 falling back to filesystem scan of bazel-bin/. \
+                 This may be slow in large workspaces."
+            );
+            info_files = crate::output::discover_aspect_outputs(&self.workspace_root);
+            log::info!(
+                "Filesystem scan discovered {} aspect output files",
+                info_files.len()
+            );
+        } else {
+            log::info!(
+                "Found {} aspect output files via stderr parsing",
+                info_files.len()
+            );
+        }
+
+        let total = info_files.len();
+        let log_interval = (total / 10).max(100);
         let mut results = Vec::new();
-        for info_path in &info_files {
+        for (i, info_path) in info_files.iter().enumerate() {
             let normalized_path = normalize_path_separators(info_path);
             let absolute_path = self.workspace_root.join(&normalized_path);
             match std::fs::read_to_string(&absolute_path) {
@@ -199,7 +221,12 @@ impl BazelInvoker {
                     continue;
                 }
             }
+            if (i + 1) % log_interval == 0 {
+                log::info!("Parsed {}/{} aspect files...", i + 1, total);
+            }
         }
+        log::info!("All {} aspect files parsed ({} read failures skipped)",
+            results.len(), total - results.len());
 
         Ok(results)
     }
@@ -220,7 +247,7 @@ impl BazelInvoker {
         }
         args.push(format!("--aspects={}", aspect_file));
         args.push("--output_groups=intellij-info-java,intellij-info-generic".to_string());
-        args.push("--show_result=100".to_string());
+        args.push("--show_result=2147483647".to_string());
         args.extend(targets.iter().cloned());
 
         let output = run_bazel_command(bazel_path, workspace_root, args).await?;

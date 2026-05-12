@@ -109,8 +109,11 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeInitialize(
 ) -> jlong {
     // Initialize stderr logger (controlled via RUST_LOG env var, default=warn).
     // try_init is idempotent — safe if called multiple times.
-    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
-        .try_init();
+    let _ = env_logger::Builder::from_env(
+        env_logger::Env::default()
+            .default_filter_or("warn,bazel_jdt_core=info,bazel_query=info"),
+    )
+    .try_init();
 
     let workspace: String = match env.get_string(&workspace_path) {
         Ok(s) => s.into(),
@@ -338,12 +341,11 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeUpdateWatchPaths(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeDiscoverTargets(
+pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeQueryTargets(
     mut env: JNIEnv,
     _class: JClass,
     handle: jlong,
     scope_patterns: JObjectArray,
-    build_flags: JObjectArray,
 ) -> jobjectArray {
     let state = match get_state(&mut env, handle) {
         Some(s) => s,
@@ -353,82 +355,118 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeDiscoverTargets(
 
     let scope = parse_java_string_array(&mut env, &scope_patterns);
     let scope_ref: Option<&[String]> = scope.as_deref();
-    let build_flags_vec = parse_java_string_array(&mut env, &build_flags);
-    let build_flags_ref: Option<&[String]> = build_flags_vec.as_deref();
 
-    // Call bazel synchronously via C system() on the JNI thread.
-    // The JVM has 11k+ open fds; Rust's Command and tokio's reactor trigger EBADF.
-    // C system() does a bare fork+exec without fd manipulation, sidestepping this.
     log::info!(
-        "nativeDiscoverTargets: sync path, workspace={:?}",
+        "nativeQueryTargets: bazel query, workspace={:?}",
         state.workspace_root
     );
-    let targets = match state
-        .invoker
-        .discover_java_targets_sync(scope_ref, build_flags_ref)
-    {
+    let targets = match state.invoker.discover_java_targets_sync(scope_ref, None) {
         Ok(t) => t,
         Err(e) => {
             let msg = format!(
                 "Failed to discover targets: {}. Try running 'bazel query //...:*' in the workspace to verify Java targets exist.",
                 e
             );
-            log::error!("nativeDiscoverTargets error: {}", msg);
+            log::error!("nativeQueryTargets error: {}", msg);
             state.set_sync_state(SyncState::Error);
             let _ = env.throw_new("java/lang/RuntimeException", msg);
             return std::ptr::null_mut();
         }
     };
 
-    if targets.is_empty() {
-        log::info!("No Java targets found in workspace - setting state to Idle");
-        state.set_sync_state(SyncState::Idle);
-        return match create_string_array(&mut env, &[]) {
-            Ok(arr) => arr,
-            Err(_) => std::ptr::null_mut(),
-        };
+    log::info!("nativeQueryTargets: found {} targets", targets.len());
+    match create_string_array(&mut env, &targets) {
+        Ok(arr) => arr,
+        Err(_) => std::ptr::null_mut(),
     }
+}
 
+#[no_mangle]
+pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativePopulateGraph(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) {
+    let state = match get_state(&mut env, handle) {
+        Some(s) => s,
+        None => return,
+    };
+
+    log::info!("nativePopulateGraph: parsing BUILD files");
     match state.populate_graph_from_build_files() {
         Ok(count) => log::info!("Populated dependency graph from {} BUILD files", count),
         Err(e) => log::warn!("Failed to populate graph from BUILD files: {}", e),
     }
+}
 
-    // Batch aspect build: populate JAR data for ALL targets in a single Bazel invocation.
-    // Uses sync path (system()) to avoid EBADF with 11k+ open JVM file descriptors.
+#[no_mangle]
+pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeRunAspectBuild(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    targets: JObjectArray,
+    build_flags: JObjectArray,
+) -> jobjectArray {
+    let state = match get_state(&mut env, handle) {
+        Some(s) => s,
+        None => return std::ptr::null_mut(),
+    };
+
+    let target_vec = match parse_java_string_array(&mut env, &targets) {
+        Some(t) => t,
+        None => {
+            state.set_sync_state(SyncState::Idle);
+            return match create_string_array(&mut env, &[]) {
+                Ok(arr) => arr,
+                Err(_) => std::ptr::null_mut(),
+            };
+        }
+    };
+    let build_flags_vec = parse_java_string_array(&mut env, &build_flags);
+    let build_flags_ref: Option<&[String]> = build_flags_vec.as_deref();
+
+    log::info!(
+        "nativeRunAspectBuild: starting batch aspect build for {} targets",
+        target_vec.len()
+    );
+    match state
+        .invoker
+        .resolve_full_classpath_sync(&target_vec, build_flags_ref)
     {
-        let aspect_targets = targets.clone();
-        log::info!(
-            "Starting batch aspect build for {} targets",
-            aspect_targets.len()
-        );
-        match state
-            .invoker
-            .resolve_full_classpath_sync(&aspect_targets, build_flags_ref)
-        {
-            Ok(aspect_results) => {
-                let mut graph = state.graph.lock().unwrap_or_else(|e| e.into_inner());
-                graph.populate_from_aspects(&aspect_results, &state.workspace_root);
-                log::info!(
-                    "Batch aspect build: {} targets, {} with JARs",
-                    aspect_results.len(),
-                    aspect_results
-                        .iter()
-                        .filter(|r| r.java_info.is_some())
-                        .count()
-                );
-            }
-            Err(e) => {
-                log::warn!(
-                    "Batch aspect build failed: {}. Per-target resolution will be used.",
-                    e
-                );
-            }
+        Ok(aspect_results) => {
+            log::info!(
+                "Populating dependency graph from {} aspect results...",
+                aspect_results.len()
+            );
+            let mut graph = state.graph.lock().unwrap_or_else(|e| e.into_inner());
+            graph.populate_from_aspects(&aspect_results, &state.workspace_root);
+            let total = aspect_results.len() as i32;
+            let with_jars = aspect_results
+                .iter()
+                .filter(|r| r.java_info.is_some())
+                .count() as i32;
+            state
+                .aspect_total_files
+                .store(total, std::sync::atomic::Ordering::SeqCst);
+            state
+                .aspect_files_with_jars
+                .store(with_jars, std::sync::atomic::Ordering::SeqCst);
+            log::info!(
+                "Batch aspect build complete: {} output files, {} with JARs",
+                total,
+                with_jars
+            );
+        }
+        Err(e) => {
+            log::warn!(
+                "Batch aspect build failed: {}. Per-target resolution will be used.",
+                e
+            );
         }
     }
 
     state.set_sync_state(SyncState::Idle);
-    match create_string_array(&mut env, &targets) {
+    match create_string_array(&mut env, &target_vec) {
         Ok(arr) => arr,
         Err(_) => std::ptr::null_mut(),
     }
@@ -774,6 +812,29 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeSyncIncremental(
             );
             std::ptr::null_mut()
         }
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeGetAspectBuildStats(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) -> jni::sys::jstring {
+    let state = match get_state(&mut env, handle) {
+        Some(s) => s,
+        None => return std::ptr::null_mut(),
+    };
+    let total = state
+        .aspect_total_files
+        .load(std::sync::atomic::Ordering::SeqCst);
+    let with_jars = state
+        .aspect_files_with_jars
+        .load(std::sync::atomic::Ordering::SeqCst);
+    let stats = format!("{}|{}", total, with_jars);
+    match env.new_string(&stats) {
+        Ok(s) => s.into_raw(),
+        Err(_) => std::ptr::null_mut(),
     }
 }
 

@@ -30,7 +30,7 @@ jobs:
           targets: ${{ matrix.target }}
       - name: Install zig
         if: runner.os == 'Linux' || runner.os == 'macOS'
-        run: pip3 install ziglang
+        run: pip3 install --break-system-packages ziglang
       - name: Install cargo-zigbuild
         if: runner.os != 'Windows'
         run: cargo install cargo-zigbuild

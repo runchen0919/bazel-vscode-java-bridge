@@ -147,7 +147,8 @@ impl BazelInvoker {
             args.extend(flags.iter().map(|s| s.to_string()));
         }
         args.push(format!("--aspects={}", aspect_file));
-        args.push("--output_groups=intellij-info-java,intellij-info-generic".to_string());
+        args.push("--output_groups=intellij-info-java,intellij-info-generic,intellij-resolve-java-direct-deps".to_string());
+        args.push("--keep_going".to_string());
         args.push("--show_result=2147483647".to_string());
         args.extend(targets.iter().cloned());
 
@@ -156,9 +157,7 @@ impl BazelInvoker {
         let stderr = String::from_utf8(output.stderr)?;
 
         if !output.status.success() {
-            return Err(BazelError::CommandFailed {
-                message: format!("bazel build with aspects failed: {}", stderr),
-            });
+            log::warn!("Aspect build completed with errors (--keep_going); partial results will be used");
         }
 
         Ok(stderr)
@@ -178,26 +177,16 @@ impl BazelInvoker {
             self.build_with_aspects_sync(targets, &self.aspect_label, build_flags)?;
 
         log::info!("Discovering aspect output files...");
-        let mut info_files =
+        let stderr_files =
             crate::output::parse_aspect_output_locations(&aspect_output);
-
-        if info_files.is_empty() {
-            log::warn!(
-                "Stderr parsing found 0 aspect outputs — \
-                 falling back to filesystem scan of bazel-bin/. \
-                 This may be slow in large workspaces."
-            );
-            info_files = crate::output::discover_aspect_outputs(&self.workspace_root);
-            log::info!(
-                "Filesystem scan discovered {} aspect output files",
-                info_files.len()
-            );
-        } else {
-            log::info!(
-                "Found {} aspect output files via stderr parsing",
-                info_files.len()
-            );
-        }
+        let fs_files =
+            crate::output::discover_aspect_outputs(&self.workspace_root);
+        let (info_files, stderr_count, fs_new) =
+            crate::output::merge_aspect_outputs(stderr_files, fs_files);
+        log::info!(
+            "Aspect discovery: {} from stderr + {} new from filesystem = {} total",
+            stderr_count, fs_new, info_files.len()
+        );
 
         let total = info_files.len();
         let log_interval = (total / 10).max(100);
@@ -246,7 +235,8 @@ impl BazelInvoker {
             args.extend(flags.iter().map(|s| s.to_string()));
         }
         args.push(format!("--aspects={}", aspect_file));
-        args.push("--output_groups=intellij-info-java,intellij-info-generic".to_string());
+        args.push("--output_groups=intellij-info-java,intellij-info-generic,intellij-resolve-java-direct-deps".to_string());
+        args.push("--keep_going".to_string());
         args.push("--show_result=2147483647".to_string());
         args.extend(targets.iter().cloned());
 
@@ -255,9 +245,7 @@ impl BazelInvoker {
         let stderr = String::from_utf8(output.stderr)?;
 
         if !output.status.success() {
-            return Err(BazelError::CommandFailed {
-                message: format!("bazel build with aspects failed: {}", stderr),
-            });
+            log::warn!("Aspect build completed with errors (--keep_going); partial results will be used");
         }
 
         Ok(stderr)
@@ -290,7 +278,19 @@ impl BazelInvoker {
             .build_with_aspects(targets, &self.aspect_label, build_flags)
             .await?;
 
-        let info_files = crate::output::parse_aspect_output_locations(&aspect_output);
+        let stderr_files = crate::output::parse_aspect_output_locations(&aspect_output);
+        let ws = self.workspace_root.clone();
+        let fs_files = tokio::task::spawn_blocking(move || {
+            crate::output::discover_aspect_outputs(&ws)
+        })
+        .await
+        .unwrap_or_default();
+        let (info_files, stderr_count, fs_new) =
+            crate::output::merge_aspect_outputs(stderr_files, fs_files);
+        log::info!(
+            "Aspect discovery: {} from stderr + {} new from filesystem = {} total",
+            stderr_count, fs_new, info_files.len()
+        );
 
         let mut results = Vec::new();
         for info_path in &info_files {

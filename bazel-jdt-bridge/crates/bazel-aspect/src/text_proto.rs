@@ -692,18 +692,24 @@ impl<'a> TextProtoParser<'a> {
                 .iter()
                 .map(|m| self.extract_jar_info(m.clone()))
                 .collect();
+        } else if let Some(ProtoValue::Message(m)) = fields.get("generated_jars") {
+            info.generated_jars = vec![self.extract_jar_info(m.clone())];
         }
         if let Some(ProtoValue::Messages(msgs)) = fields.get("compile_jars") {
             info.compile_jars = msgs
                 .iter()
                 .map(|m| self.extract_artifact_location(m.clone()))
                 .collect();
+        } else if let Some(ProtoValue::Message(m)) = fields.get("compile_jars") {
+            info.compile_jars = vec![self.extract_artifact_location(m.clone())];
         }
         if let Some(ProtoValue::Messages(msgs)) = fields.get("runtime_jars") {
             info.runtime_jars = msgs
                 .iter()
                 .map(|m| self.extract_artifact_location(m.clone()))
                 .collect();
+        } else if let Some(ProtoValue::Message(m)) = fields.get("runtime_jars") {
+            info.runtime_jars = vec![self.extract_artifact_location(m.clone())];
         }
         if let Some(ProtoValue::Strings(strs)) = fields.get("annotation_processors") {
             info.annotation_processors = strs.clone();
@@ -713,6 +719,8 @@ impl<'a> TextProtoParser<'a> {
                 .iter()
                 .map(|m| self.extract_artifact_location(m.clone()))
                 .collect();
+        } else if let Some(ProtoValue::Message(m)) = fields.get("source_jars") {
+            info.source_jars = vec![self.extract_artifact_location(m.clone())];
         }
         if let Some(ProtoValue::Strings(strs)) = fields.get("javac_options") {
             info.javac_options = Some(JavacOptions {
@@ -805,6 +813,43 @@ mod tests {
 
         let java_info = result.value.java_info.as_ref().unwrap();
         assert_eq!(java_info.sources.len(), 1);
+        assert_eq!(java_info.jars.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_singular_compile_jars() {
+        let input = r#"
+            java_ide_info {
+                compile_jars {
+                    is_external: true
+                    is_source: false
+                    relative_path: "v1/commons-codec/commons-codec/1.15/commons-codec-1.15.jar"
+                    root_path: "bazel-out/darwin_arm64-fastbuild/bin/external/maven"
+                }
+                jars {
+                    jar {
+                        is_external: false
+                        is_source: false
+                        relative_path: "3rdparty/libcommons_codec.jar"
+                        root_path: "bazel-out/darwin_arm64-fastbuild/bin"
+                    }
+                }
+            }
+            key {
+                label: "//3rdparty:commons_codec"
+            }
+            kind: "java_library"
+        "#;
+
+        let result = parse_text_proto(input);
+        let java_info = result.value.java_info.as_ref().unwrap();
+        assert_eq!(java_info.compile_jars.len(), 1);
+        assert!(java_info.compile_jars[0].is_external);
+        assert!(java_info.compile_jars[0]
+            .relative_path
+            .as_ref()
+            .unwrap()
+            .contains("commons-codec-1.15.jar"));
         assert_eq!(java_info.jars.len(), 1);
     }
 

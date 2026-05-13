@@ -216,19 +216,34 @@ impl DependencyGraph {
                     })
                     .collect();
 
-                if jars.is_empty() {
-                    jars = java_info
-                        .compile_jars
-                        .iter()
-                        .filter_map(|j| {
-                            let path = j.best_path()?;
-                            Some(if j.is_source {
-                                resolve_external_path(&path, workspace_root).unwrap_or(path)
-                            } else {
-                                path
-                            })
+                let compile_jars: Vec<String> = java_info
+                    .compile_jars
+                    .iter()
+                    .filter_map(|j| {
+                        let path = j.best_path()?;
+                        Some(if j.is_source {
+                            resolve_external_path(&path, workspace_root).unwrap_or(path)
+                        } else {
+                            path
                         })
-                        .collect();
+                    })
+                    .collect();
+
+                // Prefer compile_jars over jars when:
+                // - jars is empty (java_import targets), OR
+                // - jars only contains derived non-external artifacts and
+                //   compile_jars is non-empty. This covers 3rdparty wrappers
+                //   (compile_jars = Maven JAR) AND Thrift/Avro/internal targets
+                //   (compile_jars = header JAR that exists on disk).
+                let jars_all_derived_internal = !jars.is_empty()
+                    && java_info
+                        .jars
+                        .iter()
+                        .all(|j| !j.jar.is_source && !j.jar.is_external);
+                if jars.is_empty()
+                    || (jars_all_derived_internal && !compile_jars.is_empty())
+                {
+                    jars = compile_jars;
                 }
 
                 if !jars.is_empty() {
@@ -1005,7 +1020,7 @@ mod tests {
     }
 
     #[test]
-    fn test_populate_from_aspects_jars_preferred_over_compile_jars() {
+    fn test_populate_from_aspects_source_jars_kept_over_compile_jars() {
         let mut graph = DependencyGraph::new();
 
         let target = TargetIdeInfo {
@@ -1015,6 +1030,7 @@ mod tests {
             java_info: Some(JavaIdeInfo {
                 jars: vec![JarInfo {
                     jar: ArtifactLocation {
+                        is_source: true,
                         absolute_path: Some("/output.jar".to_string()),
                         ..Default::default()
                     },
@@ -1037,7 +1053,84 @@ mod tests {
         assert_eq!(jars.len(), 1);
         assert_eq!(
             jars[0], "/output.jar",
-            "Expected `jars` field to take precedence over `compile_jars`"
+            "Source jars should be kept over compile_jars"
+        );
+    }
+
+    #[test]
+    fn test_compile_jars_preferred_for_derived_internal_targets() {
+        let mut graph = DependencyGraph::new();
+
+        let target = TargetIdeInfo {
+            label: "//thrift:service".to_string(),
+            kind: "java_library".to_string(),
+            build_file: None,
+            java_info: Some(JavaIdeInfo {
+                jars: vec![JarInfo {
+                    jar: ArtifactLocation {
+                        is_source: false,
+                        is_external: false,
+                        absolute_path: Some("/libservice.jar".to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }],
+                compile_jars: vec![ArtifactLocation {
+                    is_source: false,
+                    is_external: false,
+                    absolute_path: Some("/libservice-hjar.jar".to_string()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            deps: vec![],
+            runtime_deps: Vec::new(),
+            exports: Vec::new(),
+        };
+
+        graph.populate_from_aspects(&[target], Path::new("/workspace"));
+
+        let jars = graph.get_target_jars("//thrift:service").unwrap();
+        assert_eq!(jars.len(), 1);
+        assert_eq!(
+            jars[0], "/libservice-hjar.jar",
+            "compile_jars (hjar) should be preferred for derived internal targets"
+        );
+    }
+
+    #[test]
+    fn test_jars_kept_when_compile_jars_empty() {
+        let mut graph = DependencyGraph::new();
+
+        let target = TargetIdeInfo {
+            label: "//lib:plain".to_string(),
+            kind: "java_library".to_string(),
+            build_file: None,
+            java_info: Some(JavaIdeInfo {
+                jars: vec![JarInfo {
+                    jar: ArtifactLocation {
+                        is_source: false,
+                        is_external: false,
+                        absolute_path: Some("/libplain.jar".to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }],
+                compile_jars: vec![],
+                ..Default::default()
+            }),
+            deps: vec![],
+            runtime_deps: Vec::new(),
+            exports: Vec::new(),
+        };
+
+        graph.populate_from_aspects(&[target], Path::new("/workspace"));
+
+        let jars = graph.get_target_jars("//lib:plain").unwrap();
+        assert_eq!(jars.len(), 1);
+        assert_eq!(
+            jars[0], "/libplain.jar",
+            "jars should be kept when compile_jars is empty"
         );
     }
 

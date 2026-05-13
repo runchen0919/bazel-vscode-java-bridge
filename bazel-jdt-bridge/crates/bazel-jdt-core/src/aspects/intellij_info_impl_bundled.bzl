@@ -475,9 +475,14 @@ def collect_java_info(target, ctx, semantics, ide_info, ide_info_file, output_gr
     resolve_files_raw = java_info.compile_jars if hasattr(java_info, "compile_jars") else []
     compile_files_raw = java_info.transitive_deps if hasattr(java_info, "transitive_deps") else []
 
-    update_set_in_dict(output_groups, "intellij-info-java", depset([ide_info_file]))
-    update_set_in_dict(output_groups, "intellij-compile-java", depset(_as_list(compile_files_raw)))
-    update_set_in_dict(output_groups, "intellij-resolve-java", depset(_as_list(resolve_files_raw)))
+    update_sync_output_groups(output_groups, "intellij-info-java", depset([ide_info_file]))
+    update_sync_output_groups(output_groups, "intellij-compile-java", depset(_as_list(compile_files_raw)))
+    update_sync_output_groups(output_groups, "intellij-resolve-java", depset(_as_list(resolve_files_raw)))
+
+    # also add transitive hjars + src jars, to catch implicit deps
+    if hasattr(java_info, "transitive_compile_time_jars"):
+        update_set_in_dict(output_groups, "intellij-resolve-java-direct-deps", java_info.transitive_compile_time_jars)
+        update_set_in_dict(output_groups, "intellij-resolve-java-direct-deps", java_info.transitive_source_jars)
     return True
 
 def collect_c_toolchain_info(target, ctx, semantics, ide_info, ide_info_file, output_groups):

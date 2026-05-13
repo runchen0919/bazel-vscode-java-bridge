@@ -63,6 +63,51 @@ fn walk_for_intellij_info(
     }
 }
 
+/// Extract a dedup key from an aspect output path by stripping the
+/// `bazel-bin/` or `bazel-out/<config>/bin/` prefix, leaving the
+/// package-relative path (e.g. `src/java/com/example/lib-abc.intellij-info.txt`).
+fn aspect_dedup_key(path: &str) -> &str {
+    if let Some(rest) = path.strip_prefix("bazel-bin/") {
+        return rest;
+    }
+    // bazel-out/<config>/bin/<rest>
+    if path.starts_with("bazel-out/") {
+        if let Some(idx) = path.find("/bin/") {
+            return &path[idx + 5..];
+        }
+    }
+    path
+}
+
+/// Merge stderr-parsed and filesystem-discovered aspect output paths,
+/// deduplicating by package-relative path. Returns (merged, stderr_count, fs_new_count).
+pub fn merge_aspect_outputs(
+    stderr_paths: Vec<String>,
+    fs_paths: Vec<String>,
+) -> (Vec<String>, usize, usize) {
+    let stderr_count = stderr_paths.len();
+    let mut seen = std::collections::HashSet::new();
+    let mut merged = Vec::new();
+
+    for path in stderr_paths {
+        let key = aspect_dedup_key(&path).to_string();
+        if seen.insert(key) {
+            merged.push(path);
+        }
+    }
+
+    let mut fs_new = 0usize;
+    for path in fs_paths {
+        let key = aspect_dedup_key(&path).to_string();
+        if seen.insert(key) {
+            merged.push(path);
+            fs_new += 1;
+        }
+    }
+
+    (merged, stderr_count, fs_new)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,5 +156,38 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let results = discover_aspect_outputs(tmp.path());
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_aspect_dedup_key_bazel_bin() {
+        assert_eq!(
+            aspect_dedup_key("bazel-bin/src/java/com/example/lib-abc.intellij-info.txt"),
+            "src/java/com/example/lib-abc.intellij-info.txt"
+        );
+    }
+
+    #[test]
+    fn test_aspect_dedup_key_bazel_out() {
+        assert_eq!(
+            aspect_dedup_key("bazel-out/darwin_arm64-fastbuild/bin/src/java/com/example/lib-abc.intellij-info.txt"),
+            "src/java/com/example/lib-abc.intellij-info.txt"
+        );
+    }
+
+    #[test]
+    fn test_merge_aspect_outputs_dedup() {
+        let stderr = vec![
+            "bazel-out/darwin_arm64-fastbuild/bin/src/java/lib-abc.intellij-info.txt".to_string(),
+        ];
+        let fs = vec![
+            "bazel-bin/src/java/lib-abc.intellij-info.txt".to_string(),
+            "bazel-bin/3rdparty/grpc-123.intellij-info.txt".to_string(),
+        ];
+        let (merged, stderr_count, fs_new) = merge_aspect_outputs(stderr, fs);
+        assert_eq!(stderr_count, 1);
+        assert_eq!(fs_new, 1);
+        assert_eq!(merged.len(), 2);
+        assert!(merged[0].starts_with("bazel-out/"));
+        assert!(merged[1].contains("3rdparty"));
     }
 }

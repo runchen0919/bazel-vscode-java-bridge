@@ -69,7 +69,7 @@ jobs:
           VERSION=$(jq -r .version bazel-jdt-bridge/vscode-extension/package.json)
           echo "Syncing version: $VERSION"
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" bazel-jdt-bridge/Cargo.toml
-          sed -i "s|<version>[0-9][^<]*</version>|<version>$VERSION</version>|" bazel-jdt-bridge/java-bridge/pom.xml
+          sed -i "0,/<version>[0-9][^<]*<\/version>/s|<version>[0-9][^<]*<\/version>|<version>$VERSION<\/version>|" bazel-jdt-bridge/java-bridge/pom.xml
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Verify version synchronization

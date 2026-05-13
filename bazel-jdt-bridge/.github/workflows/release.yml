@@ -51,9 +51,43 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+
+      - name: Sync versions from package.json
+        run: |
+          VERSION=$(jq -r .version bazel-jdt-bridge/vscode-extension/package.json)
+          echo "Syncing version: $VERSION"
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" bazel-jdt-bridge/Cargo.toml
+          sed -i "s|<version>[0-9][^<]*</version>|<version>$VERSION</version>|" bazel-jdt-bridge/java-bridge/pom.xml
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Verify version synchronization
+        run: |
+          VERSION="${{ env.VERSION }}"
+          CARGO_VER=$(grep '^version = ' bazel-jdt-bridge/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          POM_VER=$(grep '<version>' bazel-jdt-bridge/java-bridge/pom.xml | head -1 | sed 's/.*<version>\(.*\)<\/version>.*/\1/')
+
+          echo "package.json: $VERSION"
+          echo "Cargo.toml:   $CARGO_VER"
+          echo "pom.xml:      $POM_VER"
+
+          if [ "$VERSION" != "$CARGO_VER" ] || [ "$VERSION" != "$POM_VER" ]; then
+            echo "ERROR: Version mismatch detected!"
+            exit 1
+          fi
+          echo "All versions synchronized: $VERSION"
+
       - name: Place native libraries into Maven resources
         run: |
           mkdir -p bazel-jdt-bridge/java-bridge/src/main/resources/native/linux-x86_64
@@ -66,9 +100,126 @@ jobs:
           cp artifacts/native-x86_64-apple-darwin/* bazel-jdt-bridge/java-bridge/src/main/resources/native/darwin-x86_64/
           cp artifacts/native-aarch64-apple-darwin/* bazel-jdt-bridge/java-bridge/src/main/resources/native/darwin-aarch64/
           cp artifacts/native-x86_64-pc-windows-gnu/* bazel-jdt-bridge/java-bridge/src/main/resources/native/windows-x86_64/
-      - name: Assemble JAR and VSIX
-        run: bash bazel-jdt-bridge/scripts/package-extension.sh
+
+      - name: Build Java bridge JAR
+        run: |
+          cd bazel-jdt-bridge/java-bridge
+          mvn clean package -DskipTests
+
+      - name: Validate native libraries in JAR
+        run: |
+          JAR_PATH=$(ls bazel-jdt-bridge/java-bridge/target/bazel-jdt-bridge-*.jar | head -1)
+          echo "Validating JAR: $JAR_PATH"
+
+          NATIVE_COUNT=$(jar tf "$JAR_PATH" | grep -c '^native/.*\.\(so\|dylib\|dll\)$' || true)
+          echo "Found $NATIVE_COUNT native libraries in JAR"
+
+          echo "Platform breakdown:"
+          jar tf "$JAR_PATH" | grep '^native/.*\.\(so\|dylib\|dll\)$' | while read f; do
+            echo "  $f"
+          done
+
+          if [ "$NATIVE_COUNT" -lt 5 ]; then
+            echo "ERROR: Expected at least 5 native libraries, found $NATIVE_COUNT"
+            echo "Missing platforms:"
+            for platform in linux-x86_64 linux-aarch64 darwin-x86_64 darwin-aarch64 windows-x86_64; do
+              if ! jar tf "$JAR_PATH" | grep -q "native/$platform/"; then
+                echo "  MISSING: $platform"
+              fi
+            done
+            exit 1
+          fi
+          echo "All platforms validated successfully"
+
+      - name: Build VS Code extension VSIX
+        run: |
+          mkdir -p bazel-jdt-bridge/vscode-extension/server
+          JAR_PATH=$(ls bazel-jdt-bridge/java-bridge/target/bazel-jdt-bridge-*.jar | head -1)
+          cp "$JAR_PATH" bazel-jdt-bridge/vscode-extension/server/com.bazel.jdt.jar
+
+          cd bazel-jdt-bridge/vscode-extension
+          npm install
+          npm run build
+
+          mkdir -p ../../../build
+          npx @vscode/vsce package --out ../../../build/
+          echo "VSIX built successfully"
+
       - uses: actions/upload-artifact@v4
         with:
           name: bazel-jdt-bridge-vsce
           path: build/*.vsix
+
+  publish:
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      IS_PRERELEASE: ${{ contains(github.ref_name, '-pre') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: bazel-jdt-bridge-vsce
+          path: dist
+
+      - name: Generate SHA256 checksum
+        run: |
+          cd dist
+          for f in *.vsix; do
+            sha256sum "$f" > "$f.sha256"
+            echo "Checksum for $f:"
+            cat "$f.sha256"
+          done
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ env.IS_PRERELEASE }}
+          generate_release_notes: true
+          files: |
+            dist/*.vsix
+            dist/*.vsix.sha256
+          body: |
+            ## Bazel JDT Bridge ${{ github.ref_name }}
+
+            ${{ env.IS_PRERELEASE == 'true' && '⚠️ **This is a pre-release build**' || '✅ **Stable release**' }}
+
+            ### Installation
+            Download the `.vsix` file and install via:
+            ```
+            code --install-extension bazel-jdt-bridge-*.vsix
+            ```
+
+            Verify integrity:
+            ```
+            sha256sum -c bazel-jdt-bridge-*.vsix.sha256
+            ```
+
+      - name: Publish to VS Code Marketplace
+        if: ${{ vars.VSCE_PAT != '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install vsce and publish
+        if: ${{ vars.VSCE_PAT != '' }}
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          npm install -g @vscode/vsce
+          cd dist
+          VSIX_FILE=$(ls *.vsix | head -1)
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            echo "Publishing as pre-release: $VSIX_FILE"
+            vsce publish --pre-release --packagePath "$VSIX_FILE"
+          else
+            echo "Publishing as stable: $VSIX_FILE"
+            vsce publish --packagePath "$VSIX_FILE"
+          fi
+
+      - name: Marketplace publish skipped
+        if: ${{ vars.VSCE_PAT == '' }}
+        run: |
+          echo "ℹ️ Marketplace publish skipped: VSCE_PAT not configured"
+          echo "To enable Marketplace publishing, set the VSCE_PAT repository variable and secret"

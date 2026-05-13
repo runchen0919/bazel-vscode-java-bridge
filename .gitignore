@@ -55,9 +55,6 @@ SPEC-KIT-GUIDE.md
 *.dylib
 *.so
 *.dll
-!bazel-jdt-bridge/java-bridge/src/main/resources/native/**/*.so
-!bazel-jdt-bridge/java-bridge/src/main/resources/native/**/*.dylib
-!bazel-jdt-bridge/java-bridge/src/main/resources/native/**/*.dll
 
 .claude
 .omc

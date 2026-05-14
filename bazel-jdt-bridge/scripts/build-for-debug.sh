@@ -184,6 +184,27 @@ if [[ "$SKIP_RUST" == false ]]; then
     echo ""
 fi
 
+# --- Step 1b: Create placeholder native libs for other platforms ---
+# bnd validates that all Bundle-NativeCode entries exist in the JAR.
+# For debug builds we only have the current platform's real library,
+# so create empty placeholders for the others.
+echo "--- [1b] Ensuring native library placeholders for all platforms ---"
+native_base="$PROJECT_ROOT/java-bridge/src/main/resources/native"
+for entry in \
+    "linux-x86_64/libbazel_jdt_core.so" \
+    "linux-aarch64/libbazel_jdt_core.so" \
+    "darwin-x86_64/libbazel_jdt_core.dylib" \
+    "darwin-aarch64/libbazel_jdt_core.dylib" \
+    "windows-x86_64/bazel_jdt_core.dll"; do
+    lib_file="$native_base/$entry"
+    if [[ ! -f "$lib_file" ]]; then
+        mkdir -p "$(dirname "$lib_file")"
+        touch "$lib_file"
+        echo "  Created placeholder: native/$entry"
+    fi
+done
+echo ""
+
 # --- Step 2: Java OSGi bundle ---
 step_num=$([ "$SKIP_RUST" == false ] && echo "2/3" || echo "1/2")
 echo "--- [$step_num] Building Java OSGi bundle ---"

@@ -1,5 +1,5 @@
 use bazel_cache::BazelCache;
-use bazel_graph::{ComputedClasspath, DependencyGraph, TargetKind};
+use bazel_graph::{ComputedClasspath, DependencyGraph, ResolvedJar, TargetKind};
 use bazel_parser::{BuildFileParser, RuleType};
 
 #[test]
@@ -63,9 +63,27 @@ fn dependency_chain_classpath() {
     graph.add_dep("//app:app", "//service:service");
     graph.add_dep("//service:service", "//utils:utils");
 
-    graph.set_target_jars("//utils:utils", vec!["utils.jar".to_string()]);
-    graph.set_target_jars("//service:service", vec!["service.jar".to_string()]);
-    graph.set_target_jars("//app:app", vec!["app.jar".to_string()]);
+    graph.set_target_jars(
+        "//utils:utils",
+        vec![ResolvedJar {
+            classpath_path: "utils.jar".to_string(),
+            source_path: None,
+        }],
+    );
+    graph.set_target_jars(
+        "//service:service",
+        vec![ResolvedJar {
+            classpath_path: "service.jar".to_string(),
+            source_path: None,
+        }],
+    );
+    graph.set_target_jars(
+        "//app:app",
+        vec![ResolvedJar {
+            classpath_path: "app.jar".to_string(),
+            source_path: None,
+        }],
+    );
 
     let classpath =
         ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaBinary, None).unwrap();
@@ -171,8 +189,20 @@ fn pipe_delimited_classpath_output() {
     graph.add_target("//lib:lib");
     graph.add_target("//app:app");
     graph.add_dep("//app:app", "//lib:lib");
-    graph.set_target_jars("//lib:lib", vec!["lib.jar".to_string()]);
-    graph.set_target_jars("//app:app", vec!["app.jar".to_string()]);
+    graph.set_target_jars(
+        "//lib:lib",
+        vec![ResolvedJar {
+            classpath_path: "lib.jar".to_string(),
+            source_path: None,
+        }],
+    );
+    graph.set_target_jars(
+        "//app:app",
+        vec![ResolvedJar {
+            classpath_path: "app.jar".to_string(),
+            source_path: None,
+        }],
+    );
 
     let classpath =
         ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaBinary, None).unwrap();

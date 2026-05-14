@@ -1,4 +1,4 @@
-use crate::graph::{DependencyGraph, GraphError};
+use crate::graph::{infer_source_attachment, DependencyGraph, GraphError};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
@@ -195,13 +195,12 @@ impl ComputedClasspath {
         let deps = graph.transitive_deps(target_label)?;
 
         let mut entries = Vec::new();
-        let mut seen_jars = std::collections::HashSet::new();
+        let mut seen_jars: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
 
         for dep_label in &deps {
             let dep_is_testonly = is_test_context && graph.is_testonly(dep_label);
 
-            // Bazel 6+ uses "@@" canonical labels for external repos. Only skip
-            // toolchain/platform targets — Maven deps etc. must pass through.
             if is_bazel_internal_label(dep_label) {
                 continue;
             }
@@ -222,25 +221,34 @@ impl ComputedClasspath {
 
             if let Some(jars) = graph.get_target_jars(dep_label) {
                 for jar in jars {
-                    if seen_jars.insert(jar.clone()) {
-                        let source_path = graph.get_target_source_jar(dep_label, jar);
-                        let effective_source = if let Some(ref sp) = source_path {
-                            if std::path::Path::new(sp).exists() {
-                                source_path
-                            } else if is_workspace_internal {
-                                infer_source_attachment(dep_label, workspace_root)
-                            } else {
-                                None
+                    let resolve_source = |jar: &crate::graph::ResolvedJar| {
+                        jar.source_path
+                            .as_ref()
+                            .filter(|p| std::path::Path::new(p).exists())
+                            .cloned()
+                            .or_else(|| {
+                                if is_workspace_internal {
+                                    infer_source_attachment(dep_label, workspace_root)
+                                } else {
+                                    None
+                                }
+                            })
+                    };
+
+                    if let Some(&existing_idx) = seen_jars.get(&jar.classpath_path) {
+                        if entries[existing_idx].source_attachment_path.is_none() {
+                            let source = resolve_source(jar);
+                            if source.is_some() {
+                                entries[existing_idx].source_attachment_path = source;
                             }
-                        } else if is_workspace_internal {
-                            infer_source_attachment(dep_label, workspace_root)
-                        } else {
-                            None
-                        };
+                        }
+                    } else {
+                        let source = resolve_source(jar);
+                        seen_jars.insert(jar.classpath_path.clone(), entries.len());
                         entries.push(ClasspathEntry {
                             entry_type: ClasspathEntryType::Library,
-                            path: jar.clone(),
-                            source_attachment_path: effective_source,
+                            path: jar.classpath_path.clone(),
+                            source_attachment_path: source,
                             is_test: dep_is_testonly,
                             is_exported: false,
                             access_rules: Vec::new(),
@@ -253,7 +261,7 @@ impl ComputedClasspath {
 
         let output_jars = graph
             .get_target_jars(target_label)
-            .cloned()
+            .map(|jars| jars.iter().map(|j| j.classpath_path.clone()).collect())
             .unwrap_or_default();
 
         Ok(ComputedClasspath {
@@ -277,11 +285,15 @@ impl ComputedClasspath {
 
         if let Some(jars) = graph.get_target_jars(target_label) {
             for jar in jars {
-                let source_path = graph.get_target_source_jar(target_label, jar);
+                let source = jar
+                    .source_path
+                    .as_ref()
+                    .filter(|p| std::path::Path::new(p).exists())
+                    .cloned();
                 entries.push(ClasspathEntry {
                     entry_type: ClasspathEntryType::Library,
-                    path: jar.clone(),
-                    source_attachment_path: source_path,
+                    path: jar.classpath_path.clone(),
+                    source_attachment_path: source,
                     is_test: false,
                     is_exported: false,
                     access_rules: Vec::new(),
@@ -292,7 +304,7 @@ impl ComputedClasspath {
 
         let output_jars = graph
             .get_target_jars(target_label)
-            .cloned()
+            .map(|jars| jars.iter().map(|j| j.classpath_path.clone()).collect())
             .unwrap_or_default();
 
         Ok(ComputedClasspath {
@@ -366,64 +378,6 @@ impl ComputedClasspath {
     }
 }
 
-fn pkg_contains_java_content(dir: &std::path::Path) -> bool {
-    dir.read_dir()
-        .ok()
-        .map(|mut entries| {
-            entries.any(|e| {
-                e.map(|e| {
-                    let name = e.file_name();
-                    let name_str = name.to_string_lossy();
-                    name_str.ends_with(".java")
-                })
-                .unwrap_or(false)
-            })
-        })
-        .unwrap_or(false)
-}
-
-fn infer_source_attachment(dep_label: &str, workspace_root: Option<&str>) -> Option<String> {
-    let ws_root = workspace_root?;
-    let label = dep_label.strip_prefix("//")?;
-    let package_path = label.split(':').next().unwrap_or(label);
-    if package_path.is_empty() {
-        return None;
-    }
-
-    let source_root_markers = ["src/main/java", "src/test/java", "src/java", "java"];
-    let pkg = std::path::Path::new(ws_root).join(package_path);
-
-    // Probe filesystem: <workspace_root>/<package_path>/<marker>
-    for marker in &source_root_markers {
-        let candidate = pkg.join(marker);
-        if candidate.is_dir() {
-            return Some(candidate.to_string_lossy().into_owned());
-        }
-    }
-
-    // Fallback: package directory itself (flat layouts)
-    if pkg.is_dir() && pkg_contains_java_content(&pkg) {
-        return Some(pkg.to_string_lossy().into_owned());
-    }
-
-    // Substring fallback for labels with embedded source paths
-    let substring_markers = [
-        "src/main/java/",
-        "src/test/java/",
-        "src/java/",
-        "javatests/",
-        "java/",
-    ];
-    for marker in &substring_markers {
-        if let Some(idx) = package_path.find(marker) {
-            let root = &package_path[..idx + marker.len() - 1];
-            return Some(format!("{}/{}", ws_root, root));
-        }
-    }
-
-    None
-}
-
 /// Returns true for Bazel-internal toolchain/platform targets that should never
 /// appear on a Java classpath. In Bazel 6+, canonical repo labels use "@@" prefix.
 /// External dependencies like Maven artifacts (e.g. `@@maven+...//:guava`) must NOT
@@ -437,6 +391,7 @@ pub fn is_bazel_internal_label(label: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph::{infer_source_attachment, ResolvedJar};
     use bazel_aspect::{ArtifactLocation, JarInfo, JavaIdeInfo, TargetIdeInfo};
     use std::path::Path;
 
@@ -987,7 +942,10 @@ mod tests {
         graph.add_target("@@rules_jvm_external~maven~maven//:guava");
         graph.set_target_jars(
             "@@rules_jvm_external~maven~maven//:guava",
-            vec!["/guava.jar".to_string()],
+            vec![ResolvedJar {
+                classpath_path: "/guava.jar".to_string(),
+                source_path: None,
+            }],
         );
         graph.label_aliases.insert(
             "@maven//:guava".to_string(),
@@ -996,7 +954,7 @@ mod tests {
 
         let jars = graph.get_target_jars("@maven//:guava");
         assert!(jars.is_some());
-        assert_eq!(jars.unwrap()[0], "/guava.jar");
+        assert_eq!(jars.unwrap()[0].classpath_path, "/guava.jar");
     }
 
     #[test]
@@ -1010,7 +968,10 @@ mod tests {
         graph.add_target("@@rules_jvm_external~maven~maven//:com_google_guava_guava");
         graph.set_target_jars(
             "@@rules_jvm_external~maven~maven//:com_google_guava_guava",
-            vec!["/guava-33.4.0-jre.jar".to_string()],
+            vec![ResolvedJar {
+                classpath_path: "/guava-33.4.0-jre.jar".to_string(),
+                source_path: None,
+            }],
         );
         graph.label_aliases.insert(
             "@maven//:com_google_guava_guava".to_string(),
@@ -1151,8 +1112,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let guava_jar = tmp.path().join("guava.jar");
         let src_jar = tmp.path().join("guava-sources.jar");
-        std::fs::File::create(&guava_jar).unwrap();
-        std::fs::File::create(&src_jar).unwrap();
+        std::fs::write(&guava_jar, [0u8; 2048]).unwrap();
+        std::fs::write(&src_jar, [0u8; 2048]).unwrap();
 
         let mut graph = DependencyGraph::new();
         let results = vec![
@@ -1302,8 +1263,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let guava_jar = tmp.path().join("guava.jar");
         let src_jar = tmp.path().join("guava-sources.jar");
-        std::fs::File::create(&guava_jar).unwrap();
-        std::fs::File::create(&src_jar).unwrap();
+        std::fs::write(&guava_jar, [0u8; 2048]).unwrap();
+        std::fs::write(&src_jar, [0u8; 2048]).unwrap();
 
         let mut graph = DependencyGraph::new();
         let results = vec![
@@ -1461,8 +1422,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let binary_jar = tmp.path().join("lib.jar");
         let source_jar = tmp.path().join("lib-sources.jar");
-        std::fs::File::create(&binary_jar).unwrap();
-        std::fs::File::create(&source_jar).unwrap();
+        std::fs::write(&binary_jar, [0u8; 2048]).unwrap();
+        std::fs::write(&source_jar, [0u8; 2048]).unwrap();
 
         let mut graph = DependencyGraph::new();
         let results = vec![
@@ -1560,6 +1521,88 @@ mod tests {
             entry.source_attachment_path,
             Some(format!("{}/utils/src/main/java", ws)),
             "Phantom source JAR for workspace-internal dep should fall back to infer_source_attachment"
+        );
+    }
+
+    #[test]
+    fn test_duplicate_jar_merges_source_from_later_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let guava_jar = tmp.path().join("guava.jar");
+        let src_jar = tmp.path().join("guava-sources.jar");
+        std::fs::write(&guava_jar, [0u8; 2048]).unwrap();
+        std::fs::write(&src_jar, [0u8; 2048]).unwrap();
+
+        let guava_path = guava_jar.to_str().unwrap();
+        let src_path = src_jar.to_str().unwrap();
+
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target("//app:app", vec!["//3rdparty:guava"], vec!["/app.jar"]),
+            make_target_with_jar_path("//3rdparty:guava", vec!["@maven//:guava"], guava_path),
+            make_target_with_source_jar("@maven//:guava", vec![], guava_path, src_path),
+        ];
+        graph.populate_from_aspects(&results, Path::new(tmp.path()));
+
+        let ws = tmp.path().to_string_lossy().into_owned();
+        let cp =
+            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, Some(&ws))
+                .unwrap();
+
+        let jar_entries: Vec<_> = cp.entries.iter().filter(|e| e.path == guava_path).collect();
+        assert_eq!(
+            jar_entries.len(),
+            1,
+            "Duplicate JAR should appear only once"
+        );
+        assert_eq!(
+            jar_entries[0].source_attachment_path,
+            Some(src_path.to_string()),
+            "Source from later @maven// target should be merged into entry from //3rdparty: wrapper"
+        );
+    }
+
+    #[test]
+    fn test_duplicate_jar_preserves_first_valid_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let guava_jar = tmp.path().join("guava.jar");
+        let src1_jar = tmp.path().join("src1-sources.jar");
+        let src2_jar = tmp.path().join("src2-sources.jar");
+        std::fs::write(&guava_jar, [0u8; 2048]).unwrap();
+        std::fs::write(&src1_jar, [0u8; 2048]).unwrap();
+        std::fs::write(&src2_jar, [0u8; 2048]).unwrap();
+
+        let guava_path = guava_jar.to_str().unwrap();
+        let src1_path = src1_jar.to_str().unwrap();
+        let src2_path = src2_jar.to_str().unwrap();
+
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target("//app:app", vec!["@repo_a//:guava"], vec!["/app.jar"]),
+            make_target_with_source_jar(
+                "@repo_a//:guava",
+                vec!["@repo_b//:guava"],
+                guava_path,
+                src1_path,
+            ),
+            make_target_with_source_jar("@repo_b//:guava", vec![], guava_path, src2_path),
+        ];
+        graph.populate_from_aspects(&results, Path::new(tmp.path()));
+
+        let ws = tmp.path().to_string_lossy().into_owned();
+        let cp =
+            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, Some(&ws))
+                .unwrap();
+
+        let jar_entries: Vec<_> = cp.entries.iter().filter(|e| e.path == guava_path).collect();
+        assert_eq!(
+            jar_entries.len(),
+            1,
+            "Duplicate JAR should appear only once"
+        );
+        assert_eq!(
+            jar_entries[0].source_attachment_path,
+            Some(src1_path.to_string()),
+            "First valid source should be preserved, not overwritten by later target"
         );
     }
 }

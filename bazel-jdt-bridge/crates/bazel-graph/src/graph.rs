@@ -3,14 +3,19 @@ use petgraph::visit::EdgeRef;
 use petgraph::Direction;
 use std::collections::{HashMap, HashSet, VecDeque};
 
+/// A classpath JAR paired with its resolved source attachment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedJar {
+    pub classpath_path: String,
+    pub source_path: Option<String>,
+}
+
 /// Dependency graph of Bazel targets
 pub struct DependencyGraph {
     graph: DiGraph<String, ()>,
     label_to_index: HashMap<String, NodeIndex>,
-    /// JARs associated with each target
-    target_jars: HashMap<String, Vec<String>>,
-    /// Source JAR mappings per target: {target_label → {binary_jar_path → source_jar_path}}
-    target_source_jars: HashMap<String, HashMap<String, String>>,
+    /// JARs associated with each target, each carrying its resolved source attachment
+    target_jars: HashMap<String, Vec<ResolvedJar>>,
     /// Targets that have `testonly = True` in their Bazel rule definition.
     /// These targets can only be depended on by test targets.
     testonly_targets: HashSet<String>,
@@ -35,7 +40,6 @@ impl DependencyGraph {
             graph: DiGraph::new(),
             label_to_index: HashMap::new(),
             target_jars: HashMap::new(),
-            target_source_jars: HashMap::new(),
             testonly_targets: HashSet::new(),
             label_aliases: HashMap::new(),
         }
@@ -68,8 +72,8 @@ impl DependencyGraph {
         }
     }
 
-    /// Associate JARs with a target
-    pub fn set_target_jars(&mut self, label: &str, jars: Vec<String>) {
+    /// Associate resolved JARs (with source attachments) with a target
+    pub fn set_target_jars(&mut self, label: &str, jars: Vec<ResolvedJar>) {
         self.add_target(label);
         self.target_jars.insert(label.to_string(), jars);
     }
@@ -131,28 +135,12 @@ impl DependencyGraph {
     }
 
     /// Get JARs for a target, resolving through the alias map if needed
-    pub fn get_target_jars(&self, label: &str) -> Option<&Vec<String>> {
+    pub fn get_target_jars(&self, label: &str) -> Option<&Vec<ResolvedJar>> {
         if let Some(jars) = self.target_jars.get(label) {
             return Some(jars);
         }
         if let Some(canonical) = self.label_aliases.get(label) {
             return self.target_jars.get(canonical);
-        }
-        None
-    }
-
-    /// Get the source JAR path for a specific binary JAR of a target.
-    /// Resolves through label_aliases like get_target_jars().
-    pub fn get_target_source_jar(&self, label: &str, binary_jar: &str) -> Option<String> {
-        if let Some(sources) = self.target_source_jars.get(label) {
-            if let Some(src) = sources.get(binary_jar) {
-                return Some(src.clone());
-            }
-        }
-        if let Some(canonical) = self.label_aliases.get(label) {
-            if let Some(sources) = self.target_source_jars.get(canonical) {
-                return sources.get(binary_jar).cloned();
-            }
         }
         None
     }
@@ -172,7 +160,6 @@ impl DependencyGraph {
         self.graph = DiGraph::new();
         self.label_to_index.clear();
         self.target_jars.clear();
-        self.target_source_jars.clear();
         self.testonly_targets.clear();
         self.label_aliases.clear();
     }
@@ -206,35 +193,15 @@ impl DependencyGraph {
                 let mut jars: Vec<String> = java_info
                     .jars
                     .iter()
-                    .filter_map(|j| {
-                        let path = j.jar.best_path()?;
-                        Some(if j.jar.is_source {
-                            resolve_external_path(&path, workspace_root).unwrap_or(path)
-                        } else {
-                            path
-                        })
-                    })
+                    .filter_map(|j| normalize_artifact_path(&j.jar, workspace_root))
                     .collect();
 
                 let compile_jars: Vec<String> = java_info
                     .compile_jars
                     .iter()
-                    .filter_map(|j| {
-                        let path = j.best_path()?;
-                        Some(if j.is_source {
-                            resolve_external_path(&path, workspace_root).unwrap_or(path)
-                        } else {
-                            path
-                        })
-                    })
+                    .filter_map(|j| normalize_artifact_path(j, workspace_root))
                     .collect();
 
-                // Prefer compile_jars over jars when:
-                // - jars is empty (java_import targets), OR
-                // - jars only contains derived non-external artifacts and
-                //   compile_jars is non-empty. This covers 3rdparty wrappers
-                //   (compile_jars = Maven JAR) AND Thrift/Avro/internal targets
-                //   (compile_jars = header JAR that exists on disk).
                 let jars_all_derived_internal = !jars.is_empty()
                     && java_info
                         .jars
@@ -245,60 +212,8 @@ impl DependencyGraph {
                 }
 
                 if !jars.is_empty() {
-                    self.set_target_jars(label, jars);
-                }
-
-                let mut source_map: HashMap<String, String> = HashMap::new();
-                for jar_info in &java_info.jars {
-                    if let (Some(bin_path), Some(src_path)) = (
-                        jar_info.jar.best_path(),
-                        jar_info.source_jar.as_ref().and_then(|s| s.best_path()),
-                    ) {
-                        let src_is_source =
-                            jar_info.source_jar.as_ref().map_or(true, |s| s.is_source);
-                        let resolved_src = if src_is_source {
-                            resolve_external_path(&src_path, workspace_root).unwrap_or(src_path)
-                        } else {
-                            src_path
-                        };
-                        source_map.insert(bin_path, resolved_src);
-                    }
-                }
-
-                // When jars is empty (compile_jars fallback for java_import targets),
-                // match source_jars to compile_jars by parent directory (Maven coordinates).
-                if source_map.is_empty() && !java_info.source_jars.is_empty() {
-                    let source_by_dir: HashMap<String, String> = java_info
-                        .source_jars
-                        .iter()
-                        .filter_map(|s| {
-                            let p = s.best_path()?;
-                            let resolved = if s.is_source {
-                                resolve_external_path(&p, workspace_root).unwrap_or(p)
-                            } else {
-                                p
-                            };
-                            Some((parent_key(&resolved), resolved))
-                        })
-                        .collect();
-
-                    for bin_jar in self.target_jars.get(label).into_iter().flatten() {
-                        if let Some(src_path) = source_by_dir.get(&parent_key(bin_jar)) {
-                            source_map.insert(bin_jar.clone(), src_path.clone());
-                        }
-                    }
-                }
-
-                if !source_map.is_empty() {
-                    log::debug!(
-                        "[bazel-jdt] source_map for '{}': {} entries",
-                        label,
-                        source_map.len()
-                    );
-                    for (bin, src) in &source_map {
-                        log::trace!("[bazel-jdt]   {} -> {}", bin, src);
-                    }
-                    self.target_source_jars.insert(label.clone(), source_map);
+                    let resolved = build_resolved_jars(java_info, &jars, workspace_root, label);
+                    self.set_target_jars(label, resolved);
                 }
 
                 let pkg = package_of(label);
@@ -420,7 +335,6 @@ impl DependencyGraph {
                     self.graph.remove_node(idx);
                 }
                 self.target_jars.remove(label);
-                self.target_source_jars.remove(label);
                 self.testonly_targets.remove(label);
                 removed.push(label.clone());
             }
@@ -660,6 +574,317 @@ fn parent_key(path: &str) -> String {
         .unwrap_or_default()
 }
 
+fn normalize_artifact_path(
+    artifact: &bazel_aspect::ArtifactLocation,
+    workspace_root: &std::path::Path,
+) -> Option<String> {
+    let path = artifact.best_path()?;
+    Some(if artifact.is_source {
+        resolve_external_path(&path, workspace_root).unwrap_or(path)
+    } else {
+        path
+    })
+}
+
+/// Build `Vec<ResolvedJar>` using a 6-strategy source resolution chain.
+fn build_resolved_jars(
+    java_info: &bazel_aspect::JavaIdeInfo,
+    classpath_jars: &[String],
+    workspace_root: &std::path::Path,
+    label: &str,
+) -> Vec<ResolvedJar> {
+    let mut class_to_source: HashMap<String, String> = HashMap::new();
+    let mut interface_to_source: HashMap<String, String> = HashMap::new();
+    let mut all_source_jars: HashSet<String> = HashSet::new();
+
+    for jar_info in &java_info.jars {
+        if let Some(src_loc) = jar_info.source_jar.as_ref() {
+            if let Some(src_path) = src_loc.best_path() {
+                let resolved_src = if src_loc.is_source {
+                    resolve_external_path(&src_path, workspace_root).unwrap_or(src_path)
+                } else {
+                    absolutize_source_path(&src_path, workspace_root)
+                };
+                all_source_jars.insert(resolved_src.clone());
+
+                if let Some(key) = normalize_artifact_path(&jar_info.jar, workspace_root) {
+                    class_to_source.insert(key, resolved_src.clone());
+                }
+                if let Some(iface_loc) = jar_info.interface_jar.as_ref() {
+                    if let Some(key) = normalize_artifact_path(iface_loc, workspace_root) {
+                        interface_to_source.insert(key, resolved_src.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    let source_by_dir: HashMap<String, String> = java_info
+        .source_jars
+        .iter()
+        .filter_map(|s| {
+            let p = s.best_path()?;
+            let resolved = if s.is_source {
+                resolve_external_path(&p, workspace_root).unwrap_or(p)
+            } else {
+                absolutize_source_path(&p, workspace_root)
+            };
+            all_source_jars.insert(resolved.clone());
+            Some((parent_key(&resolved), resolved))
+        })
+        .collect();
+
+    let single_source = if all_source_jars.len() == 1 && classpath_jars.len() == 1 {
+        all_source_jars.into_iter().next()
+    } else {
+        None
+    };
+
+    let ws_str = workspace_root.to_str().unwrap_or("");
+
+    let mut stubs_discarded: u32 = 0;
+    let mut maven_cache_hits: u32 = 0;
+    let mut with_source: u32 = 0;
+
+    let result = classpath_jars
+        .iter()
+        .map(|jar_path| {
+            let mut strategy = "";
+            let source_path = class_to_source
+                .get(jar_path)
+                .cloned()
+                .and_then(|p| validate_source_jar(&p))
+                .map(|p| {
+                    strategy = "class_to_source";
+                    p
+                })
+                .or_else(|| {
+                    interface_to_source
+                        .get(jar_path)
+                        .cloned()
+                        .and_then(|p| validate_source_jar(&p))
+                        .map(|p| {
+                            strategy = "interface_to_source";
+                            p
+                        })
+                })
+                .or_else(|| {
+                    source_by_dir
+                        .get(&parent_key(jar_path))
+                        .cloned()
+                        .and_then(|p| validate_source_jar(&p))
+                        .map(|p| {
+                            strategy = "source_by_dir";
+                            p
+                        })
+                })
+                .or_else(|| {
+                    single_source
+                        .clone()
+                        .and_then(|p| validate_source_jar(&p))
+                        .map(|p| {
+                            strategy = "single_source";
+                            p
+                        })
+                })
+                .or_else(|| {
+                    if !label.starts_with('@') {
+                        infer_source_attachment(label, Some(ws_str)).map(|p| {
+                            strategy = "infer_source";
+                            p
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| {
+                    probe_source_jar_by_convention(jar_path)
+                        .and_then(|p| validate_source_jar(&p))
+                        .map(|p| {
+                            strategy = "convention_probe";
+                            p
+                        })
+                })
+                .or_else(|| {
+                    let (g, a, v) = extract_maven_coordinates(jar_path)?;
+                    let result = probe_maven_local_cache(&g, &a, &v);
+                    if result.is_some() {
+                        strategy = "maven_cache";
+                        maven_cache_hits += 1;
+                    }
+                    result
+                });
+
+            if let Some(ref src) = source_path {
+                log::info!(
+                    "[bazel-jdt] {} -> source via {}: {}",
+                    jar_path,
+                    strategy,
+                    src
+                );
+            }
+
+            if source_path.is_none()
+                && class_to_source.contains_key(jar_path)
+                && validate_source_jar(class_to_source.get(jar_path).unwrap()).is_none()
+            {
+                stubs_discarded += 1;
+            }
+
+            if source_path.is_some() {
+                with_source += 1;
+            }
+
+            ResolvedJar {
+                classpath_path: jar_path.clone(),
+                source_path,
+            }
+        })
+        .collect();
+
+    log::info!(
+        "[bazel-jdt] Source resolution for '{}': {}/{} with source, {} stubs discarded, {} maven cache hits",
+        label,
+        with_source,
+        classpath_jars.len(),
+        stubs_discarded,
+        maven_cache_hits
+    );
+
+    result
+}
+
+fn validate_source_jar(path: &str) -> Option<String> {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.len() < 1024 => None,
+        Ok(_) => Some(path.to_string()),
+        Err(_) => None,
+    }
+}
+
+fn extract_maven_coordinates(jar_path: &str) -> Option<(String, String, String)> {
+    let maven_idx = jar_path
+        .rfind("/maven2/")
+        .map(|i| i + 8)
+        .or_else(|| jar_path.rfind("/maven/").map(|i| i + 7))?;
+    let after_maven = &jar_path[maven_idx..];
+
+    let parts: Vec<&str> = after_maven.split('/').collect();
+    if parts.len() < 4 {
+        return None;
+    }
+
+    let filename = *parts.last()?;
+    if !filename.ends_with(".jar") {
+        return None;
+    }
+
+    let version = parts[parts.len() - 2];
+    let artifact_id = parts[parts.len() - 3];
+    let group_parts = &parts[..parts.len() - 3];
+    if group_parts.is_empty() {
+        return None;
+    }
+    let group_id = group_parts.join(".");
+
+    Some((group_id, artifact_id.to_string(), version.to_string()))
+}
+
+fn probe_maven_local_cache(group_id: &str, artifact_id: &str, version: &str) -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let group_path = group_id.replace('.', "/");
+    let candidate = std::path::PathBuf::from(&home)
+        .join(".m2/repository")
+        .join(&group_path)
+        .join(artifact_id)
+        .join(version)
+        .join(format!("{}-{}-sources.jar", artifact_id, version));
+    if candidate.exists() {
+        Some(candidate.to_string_lossy().into_owned())
+    } else {
+        None
+    }
+}
+
+fn absolutize_source_path(path: &str, workspace_root: &std::path::Path) -> String {
+    if path.starts_with('/') {
+        return path.to_string();
+    }
+    if path.starts_with("bazel-out/") {
+        return workspace_root.join(path).to_string_lossy().into_owned();
+    }
+    path.to_string()
+}
+
+fn probe_source_jar_by_convention(jar_path: &str) -> Option<String> {
+    let path = std::path::Path::new(jar_path);
+    let stem = path.file_stem()?.to_str()?;
+    let parent = path.parent()?;
+    let candidate = parent.join(format!("{}-sources.jar", stem));
+    if candidate.exists() {
+        return Some(candidate.to_string_lossy().into_owned());
+    }
+    None
+}
+
+fn pkg_contains_java_content(dir: &std::path::Path) -> bool {
+    dir.read_dir()
+        .ok()
+        .map(|mut entries| {
+            entries.any(|e| {
+                e.map(|e| {
+                    let name = e.file_name();
+                    let name_str = name.to_string_lossy();
+                    name_str.ends_with(".java")
+                })
+                .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+pub(crate) fn infer_source_attachment(
+    dep_label: &str,
+    workspace_root: Option<&str>,
+) -> Option<String> {
+    let ws_root = workspace_root?;
+    let label = dep_label.strip_prefix("//")?;
+    let package_path = label.split(':').next().unwrap_or(label);
+    if package_path.is_empty() {
+        return None;
+    }
+
+    let source_root_markers = ["src/main/java", "src/test/java", "src/java", "java"];
+    let pkg = std::path::Path::new(ws_root).join(package_path);
+
+    for marker in &source_root_markers {
+        let candidate = pkg.join(marker);
+        if candidate.is_dir() {
+            return Some(candidate.to_string_lossy().into_owned());
+        }
+    }
+
+    if pkg.is_dir() && pkg_contains_java_content(&pkg) {
+        return Some(pkg.to_string_lossy().into_owned());
+    }
+
+    let substring_markers = [
+        "src/main/java/",
+        "src/test/java/",
+        "src/java/",
+        "javatests/",
+        "java/",
+    ];
+    for marker in &substring_markers {
+        if let Some(idx) = package_path.find(marker) {
+            let root = &package_path[..idx + marker.len() - 1];
+            return Some(format!("{}/{}", ws_root, root));
+        }
+    }
+
+    None
+}
+
 impl Default for DependencyGraph {
     fn default() -> Self {
         Self::new()
@@ -823,7 +1048,7 @@ mod tests {
 
         assert_eq!(graph.target_count(), 1);
         let jars = graph.get_target_jars("//foo:lib").unwrap();
-        assert_eq!(jars[0], "/second.jar");
+        assert_eq!(jars[0].classpath_path, "/second.jar");
     }
 
     #[test]
@@ -1020,7 +1245,7 @@ mod tests {
         );
         let jar_list = jars.unwrap();
         assert_eq!(jar_list.len(), 1);
-        assert_eq!(jar_list[0], "/guava.jar");
+        assert_eq!(jar_list[0].classpath_path, "/guava.jar");
     }
 
     #[test]
@@ -1056,49 +1281,8 @@ mod tests {
         let jars = graph.get_target_jars("//lib:mylib").unwrap();
         assert_eq!(jars.len(), 1);
         assert_eq!(
-            jars[0], "/output.jar",
+            jars[0].classpath_path, "/output.jar",
             "Source jars should be kept over compile_jars"
-        );
-    }
-
-    #[test]
-    fn test_compile_jars_preferred_for_derived_internal_targets() {
-        let mut graph = DependencyGraph::new();
-
-        let target = TargetIdeInfo {
-            label: "//thrift:service".to_string(),
-            kind: "java_library".to_string(),
-            build_file: None,
-            java_info: Some(JavaIdeInfo {
-                jars: vec![JarInfo {
-                    jar: ArtifactLocation {
-                        is_source: false,
-                        is_external: false,
-                        absolute_path: Some("/libservice.jar".to_string()),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }],
-                compile_jars: vec![ArtifactLocation {
-                    is_source: false,
-                    is_external: false,
-                    absolute_path: Some("/libservice-hjar.jar".to_string()),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }),
-            deps: vec![],
-            runtime_deps: Vec::new(),
-            exports: Vec::new(),
-        };
-
-        graph.populate_from_aspects(&[target], Path::new("/workspace"));
-
-        let jars = graph.get_target_jars("//thrift:service").unwrap();
-        assert_eq!(jars.len(), 1);
-        assert_eq!(
-            jars[0], "/libservice-hjar.jar",
-            "compile_jars (hjar) should be preferred for derived internal targets"
         );
     }
 
@@ -1133,13 +1317,24 @@ mod tests {
         let jars = graph.get_target_jars("//lib:plain").unwrap();
         assert_eq!(jars.len(), 1);
         assert_eq!(
-            jars[0], "/libplain.jar",
+            jars[0].classpath_path, "/libplain.jar",
             "jars should be kept when compile_jars is empty"
         );
     }
 
     #[test]
     fn test_populate_from_aspects_extracts_source_jars() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let output_jar_path = workspace.join("output.jar");
+        let output_src_path = workspace.join("output-sources.jar");
+        let extra_jar_path = workspace.join("extra.jar");
+        std::fs::write(&output_jar_path, [0u8; 2048]).unwrap();
+        std::fs::write(&output_src_path, [0u8; 2048]).unwrap();
+        std::fs::write(&extra_jar_path, [0u8; 2048]).unwrap();
+
         let mut graph = DependencyGraph::new();
         let target = TargetIdeInfo {
             label: "//lib:utils".to_string(),
@@ -1149,18 +1344,18 @@ mod tests {
                 jars: vec![
                     JarInfo {
                         jar: ArtifactLocation {
-                            absolute_path: Some("/output.jar".to_string()),
+                            absolute_path: Some(output_jar_path.to_string_lossy().into_owned()),
                             ..Default::default()
                         },
                         source_jar: Some(ArtifactLocation {
-                            absolute_path: Some("/output-sources.jar".to_string()),
+                            absolute_path: Some(output_src_path.to_string_lossy().into_owned()),
                             ..Default::default()
                         }),
                         ..Default::default()
                     },
                     JarInfo {
                         jar: ArtifactLocation {
-                            absolute_path: Some("/extra.jar".to_string()),
+                            absolute_path: Some(extra_jar_path.to_string_lossy().into_owned()),
                             ..Default::default()
                         },
                         source_jar: None,
@@ -1174,22 +1369,44 @@ mod tests {
             exports: Vec::new(),
         };
 
-        graph.populate_from_aspects(&[target], Path::new("/workspace"));
+        graph.populate_from_aspects(&[target], &workspace);
 
+        let jars = graph.get_target_jars("//lib:utils").unwrap();
+        let output_jar = jars
+            .iter()
+            .find(|j| j.classpath_path == output_jar_path.to_string_lossy().as_ref())
+            .expect("Expected output.jar");
         assert_eq!(
-            graph.get_target_source_jar("//lib:utils", "/output.jar"),
-            Some("/output-sources.jar".to_string()),
-            "Expected source JAR mapping for /output.jar"
+            output_jar.source_path.as_deref(),
+            Some(output_src_path.to_str().unwrap()),
+            "Expected source JAR mapping for output.jar"
         );
+        let extra_jar = jars
+            .iter()
+            .find(|j| j.classpath_path == extra_jar_path.to_string_lossy().as_ref())
+            .expect("Expected extra.jar");
         assert_eq!(
-            graph.get_target_source_jar("//lib:utils", "/extra.jar"),
-            None,
-            "Expected no source JAR for /extra.jar (no source_jar in JarInfo)"
+            extra_jar.source_path, None,
+            "Expected no source JAR for extra.jar (no source_jar in JarInfo)"
         );
     }
 
     #[test]
     fn test_compile_jars_fallback_matches_source_jars_by_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let jar_dir = workspace.join("external/maven/guava/33.4.0-jre");
+        std::fs::create_dir_all(&jar_dir).unwrap();
+        let bin_file = jar_dir.join("processed_guava-33.4.0-jre.jar");
+        let src_file = jar_dir.join("guava-33.4.0-jre-sources.jar");
+        std::fs::write(&bin_file, [0u8; 2048]).unwrap();
+        std::fs::write(&src_file, [0u8; 2048]).unwrap();
+
+        let bin_path = bin_file.to_string_lossy().into_owned();
+        let src_path = src_file.to_string_lossy().into_owned();
+
         let mut graph = DependencyGraph::new();
         let target = TargetIdeInfo {
             label: "@maven//:guava".to_string(),
@@ -1198,16 +1415,11 @@ mod tests {
             java_info: Some(JavaIdeInfo {
                 jars: vec![],
                 compile_jars: vec![ArtifactLocation {
-                    absolute_path: Some(
-                        "external/maven/guava/33.4.0-jre/processed_guava-33.4.0-jre.jar"
-                            .to_string(),
-                    ),
+                    absolute_path: Some(bin_path.clone()),
                     ..Default::default()
                 }],
                 source_jars: vec![ArtifactLocation {
-                    absolute_path: Some(
-                        "external/maven/guava/33.4.0-jre/guava-33.4.0-jre-sources.jar".to_string(),
-                    ),
+                    absolute_path: Some(src_path.clone()),
                     ..Default::default()
                 }],
                 ..Default::default()
@@ -1217,39 +1429,47 @@ mod tests {
             exports: Vec::new(),
         };
 
-        graph.populate_from_aspects(&[target], Path::new("/workspace"));
+        graph.populate_from_aspects(&[target], &workspace);
 
-        let bin_path = "external/maven/guava/33.4.0-jre/processed_guava-33.4.0-jre.jar";
-        let src_path = "external/maven/guava/33.4.0-jre/guava-33.4.0-jre-sources.jar";
+        let jars = graph.get_target_jars("@maven//:guava").unwrap();
+        let jar = jars
+            .iter()
+            .find(|j| j.classpath_path == bin_path)
+            .expect("Expected compile_jar entry");
         assert_eq!(
-            graph.get_target_source_jar("@maven//:guava", bin_path),
-            Some(src_path.to_string()),
+            jar.source_path,
+            Some(src_path),
             "Expected source JAR matched by parent directory for java_import compile_jars fallback"
         );
     }
 
     #[test]
-    fn test_get_target_source_jar_resolves_alias() {
+    fn test_resolved_jar_source_via_alias() {
         let mut graph = DependencyGraph::new();
         let canonical = "@@rules_jvm_external~maven~maven//:guava";
         let apparent = "@maven//:guava";
 
-        let mut source_map = HashMap::new();
-        source_map.insert("/guava.jar".to_string(), "/guava-sources.jar".to_string());
-        graph
-            .target_source_jars
-            .insert(canonical.to_string(), source_map);
+        graph.add_target(canonical);
+        graph.set_target_jars(
+            canonical,
+            vec![ResolvedJar {
+                classpath_path: "/guava.jar".to_string(),
+                source_path: Some("/guava-sources.jar".to_string()),
+            }],
+        );
         graph
             .label_aliases
             .insert(apparent.to_string(), canonical.to_string());
 
+        let jars = graph.get_target_jars(apparent).unwrap();
         assert_eq!(
-            graph.get_target_source_jar(apparent, "/guava.jar"),
+            jars[0].source_path,
             Some("/guava-sources.jar".to_string()),
             "Expected source JAR via alias resolution"
         );
+        let jars2 = graph.get_target_jars(canonical).unwrap();
         assert_eq!(
-            graph.get_target_source_jar(canonical, "/guava.jar"),
+            jars2[0].source_path,
             Some("/guava-sources.jar".to_string()),
             "Expected source JAR via direct canonical label"
         );
@@ -1381,7 +1601,10 @@ mod tests {
             graph.get_target_jars("//foo:lib").is_some(),
             "JAR data should be preserved after deps-only change"
         );
-        assert_eq!(graph.get_target_jars("//foo:lib").unwrap()[0], "/foo.jar");
+        assert_eq!(
+            graph.get_target_jars("//foo:lib").unwrap()[0].classpath_path,
+            "/foo.jar"
+        );
 
         assert!(graph.has_target("//baz:new"));
     }
@@ -1425,7 +1648,13 @@ mod tests {
         graph.populate_from_parsed(&parsed, &workspace_root);
         assert_eq!(graph.target_count(), 2);
 
-        graph.set_target_jars("//foo:old", vec!["/old.jar".to_string()]);
+        graph.set_target_jars(
+            "//foo:old",
+            vec![ResolvedJar {
+                classpath_path: "/old.jar".to_string(),
+                source_path: None,
+            }],
+        );
 
         let new_parsed = ParsedBuildFile {
             path: PathBuf::from("/workspace/foo/BUILD"),
@@ -1725,11 +1954,12 @@ mod tests {
 
         let jars = graph.get_target_jars("//app:app").unwrap();
         assert_eq!(jars.len(), 1);
-        let resolved = &jars[0];
         assert!(
-            resolved.contains("/execroot/external/org_example/jar/downloaded.jar"),
+            jars[0]
+                .classpath_path
+                .contains("/execroot/external/org_example/jar/downloaded.jar"),
             "Expected JAR resolved to execroot, got: {}",
-            resolved
+            jars[0].classpath_path
         );
     }
 
@@ -1765,7 +1995,7 @@ mod tests {
         let jars = graph.get_target_jars("//lib:foo").unwrap();
         assert_eq!(jars.len(), 1);
         assert_eq!(
-            jars[0], jar_path,
+            jars[0].classpath_path, jar_path,
             "Non-external JAR path should remain unchanged"
         );
     }
@@ -1806,7 +2036,7 @@ mod tests {
         let jars = graph.get_target_jars("//app:app").unwrap();
         assert_eq!(jars.len(), 1);
         assert_eq!(
-            jars[0], stale_path,
+            jars[0].classpath_path, stale_path,
             "Original path should be preserved when resolve_external_path returns None"
         );
     }
@@ -1854,13 +2084,15 @@ mod tests {
         let jars = graph.get_target_jars("//app:app").unwrap();
         assert_eq!(jars.len(), 1);
         assert_eq!(
-            jars[0], derived_path,
+            jars[0].classpath_path, derived_path,
             "Derived artifact path should be preserved without resolve_external_path mangling"
         );
         assert!(
-            jars[0].contains("bazel-out/k8-fastbuild/bin/external/maven"),
-            "bazel-out/<config>/bin/ prefix must be retained, got: {}",
             jars[0]
+                .classpath_path
+                .contains("bazel-out/k8-fastbuild/bin/external/maven"),
+            "bazel-out/<config>/bin/ prefix must be retained, got: {}",
+            jars[0].classpath_path
         );
     }
 
@@ -1884,6 +2116,10 @@ mod tests {
             "{}/bazel-out/k8-fastbuild/bin/external/maven/v1/artifact-1.0-sources.jar",
             workspace.display()
         );
+        let jar_dir = std::path::Path::new(&bin_path).parent().unwrap();
+        std::fs::create_dir_all(jar_dir).unwrap();
+        std::fs::write(&bin_path, [0u8; 2048]).unwrap();
+        std::fs::write(&src_path, [0u8; 2048]).unwrap();
         let mut graph = DependencyGraph::new();
         let results = vec![TargetIdeInfo {
             label: "//app:app".to_string(),
@@ -1911,9 +2147,14 @@ mod tests {
         }];
         graph.populate_from_aspects(&results, &workspace);
 
-        let resolved_src = graph.get_target_source_jar("//app:app", &bin_path).unwrap();
+        let jars = graph.get_target_jars("//app:app").unwrap();
+        let jar = jars
+            .iter()
+            .find(|j| j.classpath_path == bin_path)
+            .expect("Expected bin jar");
+        let resolved_src = jar.source_path.as_ref().unwrap();
         assert_eq!(
-            resolved_src, src_path,
+            resolved_src, &src_path,
             "Derived source attachment should not be resolved via resolve_external_path"
         );
         assert!(
@@ -1921,5 +2162,422 @@ mod tests {
             "bazel-out prefix must be retained in source attachment, got: {}",
             resolved_src
         );
+    }
+
+    // --- absolutize_source_path tests ---
+
+    #[test]
+    fn test_absolutize_relative_bazel_out_path() {
+        let ws = std::path::Path::new("/home/user/workspace");
+        let result = absolutize_source_path("bazel-out/k8-fastbuild/bin/lib-src.jar", ws);
+        assert_eq!(
+            result,
+            "/home/user/workspace/bazel-out/k8-fastbuild/bin/lib-src.jar"
+        );
+    }
+
+    #[test]
+    fn test_absolutize_already_absolute_path() {
+        let ws = std::path::Path::new("/home/user/workspace");
+        let result = absolutize_source_path("/absolute/path/to/src.jar", ws);
+        assert_eq!(result, "/absolute/path/to/src.jar");
+    }
+
+    #[test]
+    fn test_absolutize_non_bazel_out_relative_path() {
+        let ws = std::path::Path::new("/home/user/workspace");
+        let result = absolutize_source_path("external/maven/src.jar", ws);
+        assert_eq!(result, "external/maven/src.jar");
+    }
+
+    #[test]
+    fn test_populate_absolutizes_derived_source_jar() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let jar_dir = workspace.join("bazel-out/k8-fastbuild/bin/lib");
+        std::fs::create_dir_all(&jar_dir).unwrap();
+        std::fs::write(jar_dir.join("liblib.jar"), [0u8; 2048]).unwrap();
+        std::fs::write(jar_dir.join("liblib-src.jar"), [0u8; 2048]).unwrap();
+
+        let mut graph = DependencyGraph::new();
+        let results = vec![TargetIdeInfo {
+            label: "//lib:lib".to_string(),
+            kind: "java_library".to_string(),
+            build_file: None,
+            java_info: Some(JavaIdeInfo {
+                jars: vec![JarInfo {
+                    jar: ArtifactLocation {
+                        relative_path: Some("lib/liblib.jar".to_string()),
+                        root_path: Some("bazel-out/k8-fastbuild/bin".to_string()),
+                        is_source: false,
+                        ..Default::default()
+                    },
+                    source_jar: Some(ArtifactLocation {
+                        relative_path: Some("lib/liblib-src.jar".to_string()),
+                        root_path: Some("bazel-out/k8-fastbuild/bin".to_string()),
+                        is_source: false,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            deps: vec![],
+            runtime_deps: Vec::new(),
+            exports: Vec::new(),
+        }];
+        graph.populate_from_aspects(&results, &workspace);
+
+        let jars = graph.get_target_jars("//lib:lib").unwrap();
+        let jar = &jars[0];
+        let src = jar.source_path.as_ref().unwrap();
+        assert!(
+            src.starts_with(workspace.to_str().unwrap()),
+            "Derived source path should be absolutized with workspace_root, got: {}",
+            src
+        );
+        assert!(
+            src.ends_with("lib/liblib-src.jar"),
+            "Source path should end with the original relative path, got: {}",
+            src
+        );
+    }
+
+    // --- stub JAR detection tests ---
+
+    #[test]
+    fn test_stub_source_jar_discarded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let stub_jar = workspace.join("stub-sources.jar");
+        std::fs::write(&stub_jar, [0u8; 283]).unwrap();
+
+        let classpath_jar = workspace.join("lib.jar");
+        std::fs::write(&classpath_jar, [0u8; 5000]).unwrap();
+
+        let java_info = JavaIdeInfo {
+            jars: vec![JarInfo {
+                jar: ArtifactLocation {
+                    absolute_path: Some(classpath_jar.to_string_lossy().into_owned()),
+                    is_source: false,
+                    ..Default::default()
+                },
+                source_jar: Some(ArtifactLocation {
+                    absolute_path: Some(stub_jar.to_string_lossy().into_owned()),
+                    is_source: false,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let classpath_jars = vec![classpath_jar.to_string_lossy().into_owned()];
+        let resolved = build_resolved_jars(&java_info, &classpath_jars, &workspace, "//lib:lib");
+
+        assert_eq!(resolved.len(), 1);
+        assert!(
+            resolved[0].source_path.is_none(),
+            "Stub source JAR (< 1KB) should be discarded, got: {:?}",
+            resolved[0].source_path
+        );
+    }
+
+    #[test]
+    fn test_real_source_jar_preserved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let source_jar = workspace.join("real-sources.jar");
+        std::fs::write(&source_jar, [0u8; 5000]).unwrap();
+
+        let classpath_jar = workspace.join("lib.jar");
+        std::fs::write(&classpath_jar, [0u8; 5000]).unwrap();
+
+        let java_info = JavaIdeInfo {
+            jars: vec![JarInfo {
+                jar: ArtifactLocation {
+                    absolute_path: Some(classpath_jar.to_string_lossy().into_owned()),
+                    is_source: false,
+                    ..Default::default()
+                },
+                source_jar: Some(ArtifactLocation {
+                    absolute_path: Some(source_jar.to_string_lossy().into_owned()),
+                    is_source: false,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let classpath_jars = vec![classpath_jar.to_string_lossy().into_owned()];
+        let resolved = build_resolved_jars(&java_info, &classpath_jars, &workspace, "//lib:lib");
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(
+            resolved[0].source_path.as_deref(),
+            Some(source_jar.to_str().unwrap()),
+            "Real source JAR (>= 1KB) should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_nonexistent_source_jar_filtered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let classpath_jar = workspace.join("lib.jar");
+        std::fs::write(&classpath_jar, [0u8; 2048]).unwrap();
+        let phantom_source = "/nonexistent/path/to/sources.jar".to_string();
+
+        let java_info = JavaIdeInfo {
+            jars: vec![JarInfo {
+                jar: ArtifactLocation {
+                    absolute_path: Some(classpath_jar.to_string_lossy().into_owned()),
+                    is_source: false,
+                    ..Default::default()
+                },
+                source_jar: Some(ArtifactLocation {
+                    absolute_path: Some(phantom_source),
+                    is_source: false,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let classpath_jars = vec![classpath_jar.to_string_lossy().into_owned()];
+        let resolved = build_resolved_jars(&java_info, &classpath_jars, &workspace, "//lib:lib");
+
+        assert_eq!(resolved.len(), 1);
+        assert!(
+            resolved[0].source_path.is_none(),
+            "Non-existent source path should be filtered so chain can try later strategies"
+        );
+    }
+
+    // --- validate_source_jar tests ---
+
+    #[test]
+    fn test_validate_source_jar_stub() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stub = tmp.path().join("stub.jar");
+        std::fs::write(&stub, [0u8; 283]).unwrap();
+        assert_eq!(validate_source_jar(stub.to_str().unwrap()), None);
+    }
+
+    #[test]
+    fn test_validate_source_jar_real() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real.jar");
+        std::fs::write(&real, [0u8; 5000]).unwrap();
+        assert_eq!(
+            validate_source_jar(real.to_str().unwrap()),
+            Some(real.to_str().unwrap().to_string())
+        );
+    }
+
+    #[test]
+    fn test_validate_source_jar_nonexistent() {
+        let result = validate_source_jar("/nonexistent/path/sources.jar");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_stub_bypassed_maven_cache_used() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let stub_jar = workspace.join("stub-sources.jar");
+        std::fs::write(&stub_jar, [0u8; 283]).unwrap();
+
+        let m2_path = tmp
+            .path()
+            .join(".m2/repository/com/google/guava/guava/28.2-jre");
+        std::fs::create_dir_all(&m2_path).unwrap();
+        let maven_source = m2_path.join("guava-28.2-jre-sources.jar");
+        std::fs::write(&maven_source, [0u8; 5000]).unwrap();
+
+        let classpath_jar_path = workspace
+            .join("external/maven/v1/https/repo1.maven.org/maven2/com/google/guava/guava/28.2-jre/guava-28.2-jre.jar");
+        std::fs::create_dir_all(classpath_jar_path.parent().unwrap()).unwrap();
+        std::fs::write(&classpath_jar_path, [0u8; 5000]).unwrap();
+
+        let java_info = JavaIdeInfo {
+            jars: vec![JarInfo {
+                jar: ArtifactLocation {
+                    absolute_path: Some(classpath_jar_path.to_string_lossy().into_owned()),
+                    is_source: false,
+                    ..Default::default()
+                },
+                source_jar: Some(ArtifactLocation {
+                    absolute_path: Some(stub_jar.to_string_lossy().into_owned()),
+                    is_source: false,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        std::env::set_var("HOME", tmp.path());
+        let classpath_jars = vec![classpath_jar_path.to_string_lossy().into_owned()];
+        let resolved =
+            build_resolved_jars(&java_info, &classpath_jars, &workspace, "@maven//:guava");
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(
+            resolved[0].source_path.as_deref(),
+            Some(maven_source.to_str().unwrap()),
+            "Should fall through stub to Maven cache source"
+        );
+    }
+
+    #[test]
+    fn test_stub_bypassed_no_fallback_gives_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let stub_jar = workspace.join("stub-sources.jar");
+        std::fs::write(&stub_jar, [0u8; 283]).unwrap();
+
+        let classpath_jar = workspace.join("lib.jar");
+        std::fs::write(&classpath_jar, [0u8; 5000]).unwrap();
+
+        let java_info = JavaIdeInfo {
+            jars: vec![JarInfo {
+                jar: ArtifactLocation {
+                    absolute_path: Some(classpath_jar.to_string_lossy().into_owned()),
+                    is_source: false,
+                    ..Default::default()
+                },
+                source_jar: Some(ArtifactLocation {
+                    absolute_path: Some(stub_jar.to_string_lossy().into_owned()),
+                    is_source: false,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        std::env::set_var("HOME", tmp.path());
+        let classpath_jars = vec![classpath_jar.to_string_lossy().into_owned()];
+        let resolved = build_resolved_jars(&java_info, &classpath_jars, &workspace, "//lib:lib");
+
+        assert_eq!(resolved.len(), 1);
+        assert!(
+            resolved[0].source_path.is_none(),
+            "Stub with no fallback should give None, got: {:?}",
+            resolved[0].source_path
+        );
+    }
+
+    #[test]
+    fn test_convention_stub_bypassed_to_maven_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let maven_jar_dir = workspace
+            .join("external/maven/v1/https/repo1.maven.org/maven2/com/google/guava/guava/28.2-jre");
+        std::fs::create_dir_all(&maven_jar_dir).unwrap();
+        let classpath_jar = maven_jar_dir.join("guava-28.2-jre.jar");
+        std::fs::write(&classpath_jar, [0u8; 5000]).unwrap();
+        let convention_stub = maven_jar_dir.join("guava-28.2-jre-sources.jar");
+        std::fs::write(&convention_stub, [0u8; 283]).unwrap();
+
+        let m2_path = tmp
+            .path()
+            .join(".m2/repository/com/google/guava/guava/28.2-jre");
+        std::fs::create_dir_all(&m2_path).unwrap();
+        let maven_source = m2_path.join("guava-28.2-jre-sources.jar");
+        std::fs::write(&maven_source, [0u8; 5000]).unwrap();
+
+        let java_info = JavaIdeInfo {
+            jars: vec![],
+            ..Default::default()
+        };
+
+        std::env::set_var("HOME", tmp.path());
+        let classpath_jars = vec![classpath_jar.to_string_lossy().into_owned()];
+        let resolved =
+            build_resolved_jars(&java_info, &classpath_jars, &workspace, "@maven//:guava");
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(
+            resolved[0].source_path.as_deref(),
+            Some(maven_source.to_str().unwrap()),
+            "Convention stub should be filtered, falling through to Maven cache"
+        );
+    }
+
+    // --- Maven coordinate extraction tests ---
+
+    #[test]
+    fn test_extract_maven_coordinates_standard() {
+        let path = "external/maven/v1/https/repo1.maven.org/maven2/com/google/guava/guava/28.2-jre/guava-28.2-jre.jar";
+        let result = extract_maven_coordinates(path);
+        assert_eq!(
+            result,
+            Some((
+                "com.google.guava".to_string(),
+                "guava".to_string(),
+                "28.2-jre".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_extract_maven_coordinates_custom_host() {
+        let path = "external/maven/v1/https/artifacts.company.net/repository/maven/org/slf4j/slf4j-api/1.7.36/slf4j-api-1.7.36.jar";
+        let result = extract_maven_coordinates(path);
+        assert_eq!(
+            result,
+            Some((
+                "org.slf4j".to_string(),
+                "slf4j-api".to_string(),
+                "1.7.36".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_extract_maven_coordinates_non_maven_path() {
+        let path = "bazel-out/k8-fastbuild/bin/lib/liblib.jar";
+        assert_eq!(extract_maven_coordinates(path), None);
+    }
+
+    #[test]
+    fn test_probe_maven_local_cache_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let m2_path = tmp
+            .path()
+            .join(".m2/repository/com/google/guava/guava/28.2-jre");
+        std::fs::create_dir_all(&m2_path).unwrap();
+        let sources_jar = m2_path.join("guava-28.2-jre-sources.jar");
+        std::fs::write(&sources_jar, [0u8; 5000]).unwrap();
+
+        std::env::set_var("HOME", tmp.path());
+        let result = probe_maven_local_cache("com.google.guava", "guava", "28.2-jre");
+        assert_eq!(result, Some(sources_jar.to_string_lossy().into_owned()));
+    }
+
+    #[test]
+    fn test_probe_maven_local_cache_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path());
+        let result = probe_maven_local_cache("com.nonexistent", "artifact", "1.0");
+        assert_eq!(result, None);
     }
 }

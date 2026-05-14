@@ -399,11 +399,19 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeRunAspectBuild(
     handle: jlong,
     targets: JObjectArray,
     build_flags: JObjectArray,
+    sync_mode: JString,
 ) -> jobjectArray {
     let state = match get_state(&mut env, handle) {
         Some(s) => s,
         None => return std::ptr::null_mut(),
     };
+
+    let full_jars = env
+        .get_string(&sync_mode)
+        .ok()
+        .map(String::from)
+        .map(|s| s == "full")
+        .unwrap_or(false);
 
     let target_vec = match parse_java_string_array(&mut env, &targets) {
         Some(t) => t,
@@ -419,12 +427,13 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeRunAspectBuild(
     let build_flags_ref: Option<&[String]> = build_flags_vec.as_deref();
 
     log::info!(
-        "nativeRunAspectBuild: starting batch aspect build for {} targets",
-        target_vec.len()
+        "nativeRunAspectBuild: starting batch aspect build for {} targets (full_jars={})",
+        target_vec.len(),
+        full_jars
     );
     match state
         .invoker
-        .resolve_full_classpath_sync(&target_vec, build_flags_ref)
+        .resolve_full_classpath_sync(&target_vec, build_flags_ref, full_jars)
     {
         Ok(aspect_results) => {
             log::info!(
@@ -841,7 +850,7 @@ fn run_full_resolution(
     log::info!("run_full_resolution for '{}'", target_label);
     let aspect_results = state
         .invoker
-        .resolve_full_classpath_sync(&targets, build_flags)
+        .resolve_full_classpath_sync(&targets, build_flags, false)
         .map_err(|e| {
             let err_str = format!("{}", e);
             let is_aspect_not_found = (err_str.contains("repository")

@@ -79,6 +79,13 @@ public class BazelCommandHandler implements IDelegateCommandHandler {
                     "Dependency source loading mode set to: " + loadingMode));
             }
 
+            if (arguments.size() > 7 && arguments.get(7) instanceof String) {
+                String syncMode = (String) arguments.get(7);
+                bridge.setSyncMode(syncMode);
+                LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                    "Sync mode set to: " + syncMode));
+            }
+
             String[] targets = bridge.discoverTargets(scopePatterns, buildFlags);
             BazelClasspathManager.refreshClasspath();
             return null;

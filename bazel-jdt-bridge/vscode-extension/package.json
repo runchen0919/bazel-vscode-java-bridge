@@ -114,6 +114,16 @@
                     ],
                     "description": "How to handle inter-project dependencies when not all workspace targets are imported. 'transitive' auto-imports all dependencies; 'optional' suppresses errors for missing projects."
                 },
+                "bazel-jdt.syncMode": {
+                    "type": "string",
+                    "default": "fast",
+                    "enum": ["fast", "full"],
+                    "enumDescriptions": [
+                        "Use header JARs (hjars) for fast sync — best for quick iteration",
+                        "Build full JARs for complete IDE experience — slower initial sync but no missing imports"
+                    ],
+                    "description": "Controls whether aspect build requests full JARs or header JARs. 'fast' uses hjars (quick sync), 'full' builds complete JARs (slower but resolves all imports and InlayHints)."
+                },
                 "bazel-jdt.dependencySourceLoading": {
                     "type": "string",
                     "default": "full-project",

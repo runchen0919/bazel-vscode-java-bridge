@@ -32,7 +32,8 @@ export function registerImportCommand(context: vscode.ExtensionContext) {
                         progress.report({ message: 'Discovering Java targets...' });
                         await vscode.commands.executeCommand('java.execute.workspaceCommand',
                             'bazel-jdt.importProject', workspaceRoot, bazelPath, config.cacheDir,
-                            scopePatterns, buildFlags, config.dependencyResolution, config.dependencySourceLoading);
+                            scopePatterns, buildFlags, config.dependencyResolution, config.dependencySourceLoading,
+                            config.syncMode);
                     }
                 );
                 vscode.window.showInformationMessage('Bazel project imported successfully');

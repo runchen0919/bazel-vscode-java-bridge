@@ -13,6 +13,7 @@ export interface BazelConfig {
     deriveTargets: boolean;
     dependencyResolution: string;
     dependencySourceLoading: string;
+    syncMode: string;
 }
 
 export function getConfig(): BazelConfig {
@@ -30,5 +31,6 @@ export function getConfig(): BazelConfig {
         deriveTargets: config.get<boolean>('deriveTargets', true),
         dependencyResolution: config.get<string>('dependencyResolution', 'transitive'),
         dependencySourceLoading: config.get<string>('dependencySourceLoading', 'full-project'),
+        syncMode: config.get<string>('syncMode', 'fast'),
     };
 }

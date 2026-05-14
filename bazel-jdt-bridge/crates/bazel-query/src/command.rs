@@ -141,13 +141,20 @@ impl BazelInvoker {
         targets: &[String],
         aspect_file: &str,
         build_flags: Option<&[String]>,
+        full_jars: bool,
     ) -> Result<String, BazelError> {
         let mut args = vec!["build".to_string()];
         if let Some(flags) = build_flags {
             args.extend(flags.iter().map(|s| s.to_string()));
         }
         args.push(format!("--aspects={}", aspect_file));
-        args.push("--output_groups=intellij-info-java,intellij-info-generic,intellij-resolve-java-direct-deps".to_string());
+        let mut output_groups =
+            "intellij-info-java,intellij-info-generic,intellij-resolve-java-direct-deps"
+                .to_string();
+        if full_jars {
+            output_groups.push_str(",intellij-resolve-java-full-jars");
+        }
+        args.push(format!("--output_groups={}", output_groups));
         args.push("--keep_going".to_string());
         args.push("--show_result=2147483647".to_string());
         args.extend(targets.iter().cloned());
@@ -170,13 +177,14 @@ impl BazelInvoker {
         &self,
         targets: &[String],
         build_flags: Option<&[String]>,
+        full_jars: bool,
     ) -> Result<Vec<TargetIdeInfo>, BazelError> {
         if targets.is_empty() {
             return Ok(Vec::new());
         }
 
         let aspect_output =
-            self.build_with_aspects_sync(targets, &self.aspect_label, build_flags)?;
+            self.build_with_aspects_sync(targets, &self.aspect_label, build_flags, full_jars)?;
 
         log::info!("Discovering aspect output files...");
         let stderr_files = crate::output::parse_aspect_output_locations(&aspect_output);
@@ -232,6 +240,7 @@ impl BazelInvoker {
         targets: &[String],
         aspect_file: &str,
         build_flags: Option<&[String]>,
+        full_jars: bool,
     ) -> Result<String, BazelError> {
         let bazel_path = self.bazel_path.clone();
         let workspace_root = self.workspace_root.clone();
@@ -240,7 +249,13 @@ impl BazelInvoker {
             args.extend(flags.iter().map(|s| s.to_string()));
         }
         args.push(format!("--aspects={}", aspect_file));
-        args.push("--output_groups=intellij-info-java,intellij-info-generic,intellij-resolve-java-direct-deps".to_string());
+        let mut output_groups =
+            "intellij-info-java,intellij-info-generic,intellij-resolve-java-direct-deps"
+                .to_string();
+        if full_jars {
+            output_groups.push_str(",intellij-resolve-java-full-jars");
+        }
+        args.push(format!("--output_groups={}", output_groups));
         args.push("--keep_going".to_string());
         args.push("--show_result=2147483647".to_string());
         args.extend(targets.iter().cloned());
@@ -269,20 +284,22 @@ impl BazelInvoker {
         &self,
         targets: &[String],
     ) -> Result<Vec<TargetIdeInfo>, BazelError> {
-        self.resolve_full_classpath_with_flags(targets, None).await
+        self.resolve_full_classpath_with_flags(targets, None, false)
+            .await
     }
 
     pub async fn resolve_full_classpath_with_flags(
         &self,
         targets: &[String],
         build_flags: Option<&[String]>,
+        full_jars: bool,
     ) -> Result<Vec<TargetIdeInfo>, BazelError> {
         if targets.is_empty() {
             return Ok(Vec::new());
         }
 
         let aspect_output = self
-            .build_with_aspects(targets, &self.aspect_label, build_flags)
+            .build_with_aspects(targets, &self.aspect_label, build_flags, full_jars)
             .await?;
 
         let stderr_files = crate::output::parse_aspect_output_locations(&aspect_output);

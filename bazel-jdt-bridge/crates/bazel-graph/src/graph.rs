@@ -190,7 +190,7 @@ impl DependencyGraph {
             }
 
             if let Some(ref java_info) = info.java_info {
-                let mut jars: Vec<String> = java_info
+                let full_jars: Vec<String> = java_info
                     .jars
                     .iter()
                     .filter_map(|j| normalize_artifact_path(&j.jar, workspace_root))
@@ -202,14 +202,23 @@ impl DependencyGraph {
                     .filter_map(|j| normalize_artifact_path(j, workspace_root))
                     .collect();
 
-                let jars_all_derived_internal = !jars.is_empty()
-                    && java_info
-                        .jars
-                        .iter()
-                        .all(|j| !j.jar.is_source && !j.jar.is_external);
-                if jars.is_empty() || (jars_all_derived_internal && !compile_jars.is_empty()) {
-                    jars = compile_jars;
-                }
+                let jars = if full_jars.is_empty() {
+                    compile_jars
+                } else {
+                    full_jars
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, jar)| {
+                            if std::path::Path::new(&jar).exists() {
+                                jar
+                            } else if i < compile_jars.len() {
+                                compile_jars[i].clone()
+                            } else {
+                                jar
+                            }
+                        })
+                        .collect()
+                };
 
                 if !jars.is_empty() {
                     let resolved = build_resolved_jars(java_info, &jars, workspace_root, label);
@@ -1249,8 +1258,12 @@ mod tests {
     }
 
     #[test]
-    fn test_populate_from_aspects_source_jars_kept_over_compile_jars() {
+    fn test_populate_from_aspects_full_jars_preferred_over_compile_jars() {
         let mut graph = DependencyGraph::new();
+
+        let tmp_dir = std::env::temp_dir();
+        let full_jar_path = tmp_dir.join("test_full_jar_preferred.jar");
+        std::fs::write(&full_jar_path, b"").unwrap();
 
         let target = TargetIdeInfo {
             label: "//lib:mylib".to_string(),
@@ -1260,7 +1273,7 @@ mod tests {
                 jars: vec![JarInfo {
                     jar: ArtifactLocation {
                         is_source: true,
-                        absolute_path: Some("/output.jar".to_string()),
+                        absolute_path: Some(full_jar_path.to_string_lossy().into_owned()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -1281,9 +1294,56 @@ mod tests {
         let jars = graph.get_target_jars("//lib:mylib").unwrap();
         assert_eq!(jars.len(), 1);
         assert_eq!(
-            jars[0].classpath_path, "/output.jar",
-            "Source jars should be kept over compile_jars"
+            jars[0].classpath_path,
+            full_jar_path.to_string_lossy(),
+            "Full JARs should be preferred over compile_jars when they exist on disk"
         );
+        let _ = std::fs::remove_file(&full_jar_path);
+    }
+
+    #[test]
+    fn test_populate_from_aspects_derived_internal_jars_preferred_over_compile_jars() {
+        let mut graph = DependencyGraph::new();
+
+        let tmp_dir = std::env::temp_dir();
+        let full_jar_path = tmp_dir.join("test_derived_internal.jar");
+        std::fs::write(&full_jar_path, b"").unwrap();
+
+        let target = TargetIdeInfo {
+            label: "//thrift:service".to_string(),
+            kind: "java_library".to_string(),
+            build_file: None,
+            java_info: Some(JavaIdeInfo {
+                jars: vec![JarInfo {
+                    jar: ArtifactLocation {
+                        is_source: false,
+                        is_external: false,
+                        absolute_path: Some(full_jar_path.to_string_lossy().into_owned()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }],
+                compile_jars: vec![ArtifactLocation {
+                    absolute_path: Some("/libservice-hjar.jar".to_string()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            deps: vec![],
+            runtime_deps: Vec::new(),
+            exports: Vec::new(),
+        };
+
+        graph.populate_from_aspects(&[target], Path::new("/workspace"));
+
+        let jars = graph.get_target_jars("//thrift:service").unwrap();
+        assert_eq!(jars.len(), 1);
+        assert_eq!(
+            jars[0].classpath_path,
+            full_jar_path.to_string_lossy(),
+            "Derived internal full JARs should be preferred over header JARs when they exist"
+        );
+        let _ = std::fs::remove_file(&full_jar_path);
     }
 
     #[test]
@@ -1319,6 +1379,70 @@ mod tests {
         assert_eq!(
             jars[0].classpath_path, "/libplain.jar",
             "jars should be kept when compile_jars is empty"
+        );
+    }
+
+    #[test]
+    fn test_populate_from_aspects_full_jar_missing_falls_back_to_hjar() {
+        let mut graph = DependencyGraph::new();
+
+        let target = TargetIdeInfo {
+            label: "//lib:fallback".to_string(),
+            kind: "java_library".to_string(),
+            build_file: None,
+            java_info: Some(JavaIdeInfo {
+                jars: vec![JarInfo {
+                    jar: ArtifactLocation {
+                        absolute_path: Some("/nonexistent/libfallback.jar".to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }],
+                compile_jars: vec![ArtifactLocation {
+                    absolute_path: Some("/existing/libfallback-hjar.jar".to_string()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            deps: vec![],
+            runtime_deps: Vec::new(),
+            exports: Vec::new(),
+        };
+
+        graph.populate_from_aspects(&[target], Path::new("/workspace"));
+
+        let jars = graph.get_target_jars("//lib:fallback").unwrap();
+        assert_eq!(jars.len(), 1);
+        assert_eq!(
+            jars[0].classpath_path, "/existing/libfallback-hjar.jar",
+            "Should fall back to compile_jar (hjar) when full JAR does not exist on disk"
+        );
+    }
+
+    #[test]
+    fn test_populate_from_aspects_no_jars_no_classpath_entries() {
+        let mut graph = DependencyGraph::new();
+
+        let target = TargetIdeInfo {
+            label: "//lib:empty".to_string(),
+            kind: "java_library".to_string(),
+            build_file: None,
+            java_info: Some(JavaIdeInfo {
+                jars: vec![],
+                compile_jars: vec![],
+                ..Default::default()
+            }),
+            deps: vec![],
+            runtime_deps: Vec::new(),
+            exports: Vec::new(),
+        };
+
+        graph.populate_from_aspects(&[target], Path::new("/workspace"));
+
+        let jars = graph.get_target_jars("//lib:empty");
+        assert!(
+            jars.is_none(),
+            "Target with no JARs should have no classpath entries"
         );
     }
 

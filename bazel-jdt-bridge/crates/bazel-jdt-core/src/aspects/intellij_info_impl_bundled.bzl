@@ -483,6 +483,11 @@ def collect_java_info(target, ctx, semantics, ide_info, ide_info_file, output_gr
     if hasattr(java_info, "transitive_compile_time_jars"):
         update_set_in_dict(output_groups, "intellij-resolve-java-direct-deps", java_info.transitive_compile_time_jars)
         update_set_in_dict(output_groups, "intellij-resolve-java-direct-deps", java_info.transitive_source_jars)
+
+    # full JARs for complete IDE experience (only built when output group is requested)
+    if hasattr(java_info, "transitive_runtime_jars"):
+        update_set_in_dict(output_groups, "intellij-resolve-java-full-jars", java_info.transitive_runtime_jars)
+
     return True
 
 def collect_c_toolchain_info(target, ctx, semantics, ide_info, ide_info_file, output_groups):

@@ -305,7 +305,7 @@ impl BazelJdtState {
         targets: &[String],
     ) -> Result<Vec<bazel_aspect::TargetIdeInfo>, String> {
         self.invoker
-            .resolve_full_classpath_sync(targets, None)
+            .resolve_full_classpath_sync(targets, None, false)
             .map_err(|e| format!("Aspect build failed: {}", e))
     }
 }

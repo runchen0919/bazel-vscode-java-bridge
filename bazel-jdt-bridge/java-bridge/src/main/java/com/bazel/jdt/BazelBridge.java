@@ -16,6 +16,7 @@ public final class BazelBridge {
     private String lastCacheDir;
     private volatile String dependencyResolutionMode = "transitive";
     private volatile String dependencySourceLoadingMode = "full-project";
+    private volatile String syncMode = "fast";
     private volatile String[] cachedDependencyPackages = new String[0];
 
     private static ExecutorService createExecutor() {
@@ -129,8 +130,9 @@ public final class BazelBridge {
 
     public String[] runAspectBuild(String[] targets, String[] buildFlags) {
         long h = snapshotHandle();
+        String mode = this.syncMode;
         try {
-            return jniExecutor.submit(() -> nativeRunAspectBuild(h, targets, buildFlags))
+            return jniExecutor.submit(() -> nativeRunAspectBuild(h, targets, buildFlags, mode))
                 .get(DISCOVER_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -214,6 +216,14 @@ public final class BazelBridge {
 
     public String getDependencySourceLoadingMode() {
         return this.dependencySourceLoadingMode;
+    }
+
+    public void setSyncMode(String mode) {
+        this.syncMode = mode;
+    }
+
+    public String getSyncMode() {
+        return this.syncMode;
     }
 
     public void setCachedDependencyPackages(String[] packages) {
@@ -326,7 +336,7 @@ public final class BazelBridge {
     private native void nativeUpdateWatchPaths(long handle, String[] watchPaths);
     private native String[] nativeQueryTargets(long handle, String[] scopePatterns);
     private native void nativePopulateGraph(long handle);
-    private native String[] nativeRunAspectBuild(long handle, String[] targets, String[] buildFlags);
+    private native String[] nativeRunAspectBuild(long handle, String[] targets, String[] buildFlags, String syncMode);
     private native String[] nativeComputeClasspath(long handle, String targetLabel, String[] buildFlags);
     private native String[] nativeComputeClasspathMerged(long handle, String[] labels);
     private native int nativeGetSyncState(long handle);

@@ -2,7 +2,7 @@
     "name": "bazel-jdt-bridge",
     "displayName": "Bazel Java Support",
     "description": "Bazel Java dependency resolver for Eclipse JDT.LS",
-    "version": "0.1.0-pre.2",
+    "version": "0.1.0-pre.3",
     "publisher": "bazel-jdt",
     "engines": {
         "vscode": "^1.85.0"

@@ -43,8 +43,9 @@ public class BazelActivator implements BundleActivator {
             ResourcesPlugin.getWorkspace().removeResourceChangeListener(invisibleProjectListener);
             invisibleProjectListener = null;
         }
+        BazelBridge.getInstance().shutdown();
         LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
-            "Bazel JDT Bridge bundle stopping (bridge survives for container recovery)"));
+            "Bazel JDT Bridge bundle stopped (classpath recovery uses disk cache on next restart)"));
     }
 
     private void checkForInvisibleProjects(IResourceChangeEvent event) {

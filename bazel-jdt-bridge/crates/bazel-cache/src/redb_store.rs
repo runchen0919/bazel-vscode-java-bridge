@@ -79,11 +79,45 @@ pub enum CacheError {
     IoError(#[from] std::io::Error),
 }
 
+fn is_lock_error(err: &redb::DatabaseError) -> bool {
+    matches!(err, redb::DatabaseError::DatabaseAlreadyOpen)
+}
+
 impl BazelCache {
-    /// Open or create the cache database
+    /// Open or create the cache database.
+    ///
+    /// Uses a three-stage strategy for lock conflicts:
+    /// 1. Try to open normally
+    /// 2. If locked, sleep 500ms and retry (covers transient cross-process locks)
+    /// 3. If still locked, delete the .redb file and create a fresh database
     pub fn open(cache_dir: &Path) -> Result<Self, CacheError> {
         std::fs::create_dir_all(cache_dir)?;
         let db_path = cache_dir.join("bazel-jdt-cache.redb");
+
+        // Stage 1: first attempt
+        match Database::create(&db_path) {
+            Ok(db) => return Ok(Self { db }),
+            Err(ref e) if is_lock_error(e) => {
+                log::warn!("Cache database locked, retrying in 500ms: {}", db_path.display());
+            }
+            Err(e) => return Err(CacheError::DatabaseError(e)),
+        }
+
+        // Stage 2: retry after 500ms
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        match Database::create(&db_path) {
+            Ok(db) => return Ok(Self { db }),
+            Err(ref e) if is_lock_error(e) => {
+                log::warn!(
+                    "Cache database still locked after retry, recreating: {}",
+                    db_path.display()
+                );
+            }
+            Err(e) => return Err(CacheError::DatabaseError(e)),
+        }
+
+        // Stage 3: delete and recreate
+        let _ = std::fs::remove_file(&db_path);
         let db = Database::create(&db_path)?;
         Ok(Self { db })
     }

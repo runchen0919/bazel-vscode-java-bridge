@@ -23,6 +23,7 @@ pub enum SyncState {
 /// Central state for the Bazel JDT bridge
 pub struct BazelJdtState {
     pub cache: BazelCache,
+    pub cache_dir: PathBuf,
     pub graph: Mutex<DependencyGraph>,
     pub parser: BuildFileParser,
     pub invoker: BazelInvoker,
@@ -75,6 +76,7 @@ impl BazelJdtState {
 
         Ok(Self {
             cache,
+            cache_dir: cache_dir.to_path_buf(),
             graph: Mutex::new(graph),
             parser,
             invoker,

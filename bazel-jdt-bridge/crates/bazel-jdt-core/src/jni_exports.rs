@@ -142,10 +142,33 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeInitialize(
         }
     };
 
+    let cache_path = std::path::PathBuf::from(&cache);
+
+    // Clean up any orphaned state using the same cache_dir (e.g., from a
+    // ClassLoader replacement that skipped nativeShutdown).
+    {
+        let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+        let orphan_keys: Vec<u64> = reg
+            .iter()
+            .filter(|(_, s)| s.cache_dir == cache_path)
+            .map(|(k, _)| *k)
+            .collect();
+        for key in orphan_keys {
+            if let Some(mut orphan) = reg.remove(&key) {
+                log::warn!(
+                    "Cleaning up orphaned native state (handle={}) for cache_dir {:?}",
+                    key,
+                    cache_path
+                );
+                shutdown_state(&mut orphan);
+            }
+        }
+    }
+
     let state = match BazelJdtState::new(
         std::path::PathBuf::from(&workspace),
         &bazel,
-        std::path::Path::new(&cache),
+        &cache_path,
     ) {
         Ok(s) => s,
         Err(e) => {
@@ -178,26 +201,7 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeInitialize(
     key as jlong
 }
 
-#[no_mangle]
-pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeShutdown(
-    _env: JNIEnv,
-    _class: JClass,
-    handle: jlong,
-) {
-    if handle <= 0 {
-        return;
-    }
-    let key = handle as u64;
-
-    let mut state_box = {
-        let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
-        match reg.remove(&key) {
-            Some(b) => b,
-            None => return,
-        }
-    };
-
-    let state = &mut *state_box;
+fn shutdown_state(state: &mut BazelJdtState) {
     state.signal_shutdown();
     state.set_sync_state(SyncState::Dead);
 
@@ -225,6 +229,28 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeShutdown(
     if let Some(join_handle) = jh {
         let _ = join_handle.join();
     }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeShutdown(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) {
+    if handle <= 0 {
+        return;
+    }
+    let key = handle as u64;
+
+    let mut state_box = {
+        let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+        match reg.remove(&key) {
+            Some(b) => b,
+            None => return,
+        }
+    };
+
+    shutdown_state(&mut state_box);
 }
 
 fn make_watcher_callback(

@@ -369,7 +369,7 @@ public class BazelProjectImporter extends AbstractProjectImporter {
             }
         };
         job.setSystem(true);
-        job.setPriority(org.eclipse.core.runtime.jobs.Job.BUILD);
+        job.setPriority(org.eclipse.core.runtime.jobs.Job.DECORATE);
         job.schedule();
     }
 

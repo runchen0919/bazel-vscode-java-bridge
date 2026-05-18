@@ -10,6 +10,7 @@ import org.eclipse.jdt.core.IClasspathContainer;
 import org.eclipse.jdt.core.JavaCore;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -44,6 +45,13 @@ public class BazelClasspathManager {
             }
             String[] labels = targetLabels.toArray(new String[0]);
             String[] rawEntries = bridge.computeClasspathMerged(labels);
+
+            String[] cachedEntries = TargetProjectMapping.readCachedClasspath(project, targetLabels.get(0));
+            if (cachedEntries != null && Arrays.equals(rawEntries, cachedEntries)) {
+                LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                    "Classpath unchanged for project " + project.getName() + ", skipping container update"));
+                return;
+            }
 
             BazelClasspathContainer container = new BazelClasspathContainer(
                 rawEntries, getTestSourcePatterns(project),

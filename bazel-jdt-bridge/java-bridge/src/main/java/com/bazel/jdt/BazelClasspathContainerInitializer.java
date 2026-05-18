@@ -87,6 +87,17 @@ public class BazelClasspathContainerInitializer extends ClasspathContainerInitia
                 allEntries.toArray(new String[0]), Collections.emptyList(),
                 bridge.getDependencyResolutionMode(),
                 project.getProject().getName());
+            if (container.getClasspathEntries().length == 0) {
+                LOG.info("All cached classpath entries for " + project.getProject().getName()
+                    + " reference stale artifacts — setting empty container");
+                JavaCore.setClasspathContainer(
+                    BazelClasspathContainer.CONTAINER_PATH,
+                    new IJavaProject[]{project},
+                    new IClasspathContainer[]{BazelClasspathContainer.EMPTY},
+                    null
+                );
+                return;
+            }
             JavaCore.setClasspathContainer(
                 BazelClasspathContainer.CONTAINER_PATH,
                 new IJavaProject[]{project},

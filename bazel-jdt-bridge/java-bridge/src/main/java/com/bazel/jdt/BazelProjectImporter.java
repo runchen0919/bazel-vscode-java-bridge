@@ -1,6 +1,7 @@
 package com.bazel.jdt;
 
 import java.io.File;
+import java.util.Hashtable;
 
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IWorkspaceRoot;
@@ -12,6 +13,11 @@ import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.IStatus;
 import org.eclipse.core.runtime.Platform;
 import org.eclipse.core.runtime.Status;
+import org.eclipse.jdt.core.JavaCore;
+import org.eclipse.jdt.internal.compiler.impl.CompilerOptions;
+import org.eclipse.jdt.launching.AbstractVMInstall;
+import org.eclipse.jdt.launching.IVMInstall;
+import org.eclipse.jdt.launching.JavaRuntime;
 import org.eclipse.jdt.ls.core.internal.AbstractProjectImporter;
 import org.eclipse.jdt.ls.core.internal.JobHelpers;
 
@@ -221,7 +227,7 @@ public class BazelProjectImporter extends AbstractProjectImporter {
                 }
             }, monitor);
 
-            // Batch-set all classpath containers before indexer runs
+            preSetJavaCoreOptions();
             BazelClasspathManager.batchSetClasspathContainers(false);
         } finally {
             BazelClasspathContainerInitializer.setImportInProgress(false);
@@ -304,6 +310,7 @@ public class BazelProjectImporter extends AbstractProjectImporter {
                 }
             }, monitor);
 
+            preSetJavaCoreOptions();
             BazelClasspathManager.batchSetClasspathContainers(true);
         } finally {
             BazelClasspathContainerInitializer.setImportInProgress(false);
@@ -356,6 +363,24 @@ public class BazelProjectImporter extends AbstractProjectImporter {
     @Override
     public boolean isResolved(java.io.File rootFolder) {
         return true;
+    }
+
+    private void preSetJavaCoreOptions() {
+        try {
+            Hashtable<String, String> defaultOptions = JavaCore.getDefaultOptions();
+            IVMInstall defaultVM = JavaRuntime.getDefaultVMInstall();
+            if (defaultVM instanceof AbstractVMInstall jvm) {
+                long jdkLevel = CompilerOptions.versionToJdkLevel(jvm.getJavaVersion());
+                String compliance = CompilerOptions.versionFromJdkLevel(jdkLevel);
+                JavaCore.setComplianceOptions(compliance, defaultOptions);
+            } else {
+                JavaCore.setComplianceOptions(JavaCore.VERSION_11, defaultOptions);
+            }
+            JavaCore.setOptions(defaultOptions);
+        } catch (Exception e) {
+            LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                "Failed to pre-set JavaCore options: " + e.getMessage()));
+        }
     }
 
     private String extractPackageName(String targetLabel) {

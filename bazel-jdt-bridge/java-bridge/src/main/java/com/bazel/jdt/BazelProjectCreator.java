@@ -5,9 +5,11 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+import org.eclipse.core.resources.FileInfoMatcherDescription;
 import org.eclipse.core.resources.ICommand;
-
 import org.eclipse.core.resources.IProject;
+import org.eclipse.core.resources.IResource;
+import org.eclipse.core.resources.IResourceFilterDescription;
 import org.eclipse.core.resources.IWorkspaceRoot;
 import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.CoreException;
@@ -85,6 +87,7 @@ public final class BazelProjectCreator {
 
             TargetProjectMapping.appendTargets(project, Collections.singletonList(targetLabel));
 
+            preCreateResourceFilter(project);
             ensureNatures(project, monitor);
             String inferredSourceRoot = SourceRootUtils.inferSourceRoot(workspacePath, packagePath);
             configureClasspath(project, packagePath, workspacePath, targetLabel, inferredSourceRoot, monitor, deferContainerResolution);
@@ -119,6 +122,30 @@ public final class BazelProjectCreator {
         }
 
         removeJavaBuilder(project, monitor);
+    }
+
+    private static void preCreateResourceFilter(IProject project) {
+        try {
+            for (IResourceFilterDescription f : project.getFilters()) {
+                FileInfoMatcherDescription matcher = f.getFileInfoMatcherDescription();
+                if ("org.eclipse.core.resources.regexFilterMatcher".equals(matcher.getId())
+                        && matcher.getArguments() instanceof String args
+                        && args.contains("__CREATED_BY_JAVA_LANGUAGE_SERVER__")) {
+                    return;
+                }
+            }
+            int filterType = IResourceFilterDescription.EXCLUDE_ALL
+                    | IResourceFilterDescription.INHERITABLE
+                    | IResourceFilterDescription.FILES
+                    | IResourceFilterDescription.FOLDERS;
+            project.createFilter(filterType,
+                    new FileInfoMatcherDescription("org.eclipse.core.resources.regexFilterMatcher",
+                            "__CREATED_BY_JAVA_LANGUAGE_SERVER__"),
+                    IResource.NONE, null);
+        } catch (CoreException e) {
+            LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                "Failed to pre-create resource filter: " + e.getMessage()));
+        }
     }
 
     private static void removeJavaBuilder(IProject project, IProgressMonitor monitor) throws CoreException {

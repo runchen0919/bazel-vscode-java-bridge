@@ -84,19 +84,37 @@ fn is_lock_error(err: &redb::DatabaseError) -> bool {
 }
 
 impl BazelCache {
+    /// Eagerly create tables so that subsequent read transactions can open them.
+    /// Write-transaction `open_table` creates the table if it doesn't exist;
+    /// read-transaction `open_table` returns `TableDoesNotExist` if it was never created.
+    fn ensure_tables_exist(db: &Database) -> Result<(), CacheError> {
+        let txn = db.begin_write()?;
+        {
+            txn.open_table(CLASSPATH_TABLE)?;
+            txn.open_table(BUILD_HASH_TABLE)?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
     /// Open or create the cache database.
     ///
     /// Uses a three-stage strategy for lock conflicts:
     /// 1. Try to open normally
     /// 2. If locked, sleep 500ms and retry (covers transient cross-process locks)
     /// 3. If still locked, delete the .redb file and create a fresh database
+    ///
+    /// After opening, eagerly creates tables so read transactions always succeed.
     pub fn open(cache_dir: &Path) -> Result<Self, CacheError> {
         std::fs::create_dir_all(cache_dir)?;
         let db_path = cache_dir.join("bazel-jdt-cache.redb");
 
         // Stage 1: first attempt
         match Database::create(&db_path) {
-            Ok(db) => return Ok(Self { db }),
+            Ok(db) => {
+                Self::ensure_tables_exist(&db)?;
+                return Ok(Self { db });
+            }
             Err(ref e) if is_lock_error(e) => {
                 log::warn!(
                     "Cache database locked, retrying in 500ms: {}",
@@ -109,7 +127,10 @@ impl BazelCache {
         // Stage 2: retry after 500ms
         std::thread::sleep(std::time::Duration::from_millis(500));
         match Database::create(&db_path) {
-            Ok(db) => return Ok(Self { db }),
+            Ok(db) => {
+                Self::ensure_tables_exist(&db)?;
+                return Ok(Self { db });
+            }
             Err(ref e) if is_lock_error(e) => {
                 log::warn!(
                     "Cache database still locked after retry, recreating: {}",
@@ -122,13 +143,19 @@ impl BazelCache {
         // Stage 3: delete and recreate
         let _ = std::fs::remove_file(&db_path);
         let db = Database::create(&db_path)?;
+        Self::ensure_tables_exist(&db)?;
         Ok(Self { db })
     }
 
-    /// Get a cached classpath for a target
+    /// Get a cached classpath for a target.
+    /// Returns None if the table doesn't exist yet (fresh database).
     pub fn get_classpath(&self, label: &str) -> Result<Option<String>, CacheError> {
         let txn = self.db.begin_read()?;
-        let table = txn.open_table(CLASSPATH_TABLE)?;
+        let table = match txn.open_table(CLASSPATH_TABLE) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+            Err(e) => return Err(CacheError::TableError(e)),
+        };
         if let Some(value) = table.get(label)? {
             Ok(Some(value.value().to_string()))
         } else {
@@ -147,10 +174,15 @@ impl BazelCache {
         Ok(())
     }
 
-    /// Get a cached BUILD file hash
+    /// Get a cached BUILD file hash.
+    /// Returns None if the table doesn't exist yet (fresh database).
     pub fn get_build_hash(&self, path: &str) -> Result<Option<String>, CacheError> {
         let txn = self.db.begin_read()?;
-        let table = txn.open_table(BUILD_HASH_TABLE)?;
+        let table = match txn.open_table(BUILD_HASH_TABLE) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+            Err(e) => return Err(CacheError::TableError(e)),
+        };
         if let Some(value) = table.get(path)? {
             Ok(Some(value.value().to_string()))
         } else {
@@ -182,10 +214,15 @@ impl BazelCache {
         Ok(())
     }
 
-    /// Load all cached classpaths (bulk load for IDE restart)
+    /// Load all cached classpaths (bulk load for IDE restart).
+    /// Returns an empty Vec if the table doesn't exist yet (fresh database).
     pub fn load_all_classpaths(&self) -> Result<Vec<(String, String)>, CacheError> {
         let txn = self.db.begin_read()?;
-        let table = txn.open_table(CLASSPATH_TABLE)?;
+        let table = match txn.open_table(CLASSPATH_TABLE) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(CacheError::TableError(e)),
+        };
         let mut result = Vec::new();
         for entry in table.iter()? {
             let (key, value) = entry?;
@@ -221,7 +258,11 @@ impl BazelCache {
 
     fn find_corrupted_entries(&self) -> Result<Vec<String>, CacheError> {
         let txn = self.db.begin_read()?;
-        let table = txn.open_table(CLASSPATH_TABLE)?;
+        let table = match txn.open_table(CLASSPATH_TABLE) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(CacheError::TableError(e)),
+        };
         let mut corrupted = Vec::new();
         for entry in table.iter()? {
             match entry {
@@ -243,13 +284,21 @@ impl BazelCache {
 
     pub fn count_classpath_entries(&self) -> Result<usize, CacheError> {
         let txn = self.db.begin_read()?;
-        let table = txn.open_table(CLASSPATH_TABLE)?;
+        let table = match txn.open_table(CLASSPATH_TABLE) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(0),
+            Err(e) => return Err(CacheError::TableError(e)),
+        };
         Ok(table.len()? as usize)
     }
 
     pub fn list_build_hash_keys(&self) -> Result<Vec<String>, CacheError> {
         let txn = self.db.begin_read()?;
-        let table = txn.open_table(BUILD_HASH_TABLE)?;
+        let table = match txn.open_table(BUILD_HASH_TABLE) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(CacheError::TableError(e)),
+        };
         let mut keys = Vec::new();
         for entry in table.iter()? {
             match entry {

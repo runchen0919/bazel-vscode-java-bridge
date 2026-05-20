@@ -1,6 +1,7 @@
 package com.bazel.jdt;
 
 import java.io.File;
+import java.util.Hashtable;
 
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IWorkspaceRoot;
@@ -12,6 +13,11 @@ import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.IStatus;
 import org.eclipse.core.runtime.Platform;
 import org.eclipse.core.runtime.Status;
+import org.eclipse.jdt.core.JavaCore;
+import org.eclipse.jdt.internal.compiler.impl.CompilerOptions;
+import org.eclipse.jdt.launching.AbstractVMInstall;
+import org.eclipse.jdt.launching.IVMInstall;
+import org.eclipse.jdt.launching.JavaRuntime;
 import org.eclipse.jdt.ls.core.internal.AbstractProjectImporter;
 import org.eclipse.jdt.ls.core.internal.JobHelpers;
 
@@ -36,6 +42,10 @@ public class BazelProjectImporter extends AbstractProjectImporter {
             return;
         }
 
+        if (tryFastReload(monitor)) {
+            return;
+        }
+
         String workspacePath = rootFolder.getAbsolutePath();
         String cacheDir = BazelCommandHandler.DEFAULT_CACHE_DIR;
 
@@ -54,6 +64,8 @@ public class BazelProjectImporter extends AbstractProjectImporter {
         bridge.initialize(workspacePath, bazelPath, cacheDir);
         LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
             "Importing Bazel workspace: " + workspacePath));
+
+        ensureBazelProjectsGitignore(workspacePath);
 
         if (projectView != null && !projectView.getDirectories().isEmpty()) {
             String[] watchDirs = projectView.getDirectories().toArray(new String[0]);
@@ -153,73 +165,192 @@ public class BazelProjectImporter extends AbstractProjectImporter {
         if (finalTargets == null || finalTargets.length == 0) return;
 
         // Phase 1: Create all projects (deferred classpath resolution)
-        ResourcesPlugin.getWorkspace().run(new IWorkspaceRunnable() {
-            @Override
-            public void run(IProgressMonitor pm) throws CoreException {
-                IWorkspaceRoot workspaceRoot = ResourcesPlugin.getWorkspace().getRoot();
-                boolean firstProject = true;
+        BazelClasspathContainerInitializer.setImportInProgress(true);
+        try {
+            ResourcesPlugin.getWorkspace().run(new IWorkspaceRunnable() {
+                @Override
+                public void run(IProgressMonitor pm) throws CoreException {
+                    IWorkspaceRoot workspaceRoot = ResourcesPlugin.getWorkspace().getRoot();
+                    boolean firstProject = true;
 
-                for (String targetLabel : finalTargets) {
-                    try {
-                        String packagePath = extractPackageName(targetLabel);
-                        IProject project = BazelProjectCreator.createProjectForPackage(
-                            workspacePath, packagePath, targetLabel, pm, true);
-
-                        if (firstProject && project != null) {
-                            TargetProjectMapping.storeWorkspaceConfig(project, workspacePath, bazelPath, cacheDir);
-                            firstProject = false;
-                        }
-                    } catch (Exception e) {
-                        LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
-                            "Failed to import target: " + targetLabel, e));
-                    }
-                }
-
-                String loadingMode = bridge.getDependencySourceLoadingMode();
-                String[] depEntries = bridge.getTransitiveWorkspaceDeps(finalTargets);
-                bridge.setCachedDependencyPackages(depEntries);
-
-                if ("full-project".equals(loadingMode) && depEntries != null && depEntries.length > 0) {
-                    for (String entry : depEntries) {
+                    for (String targetLabel : finalTargets) {
                         try {
-                            String[] parts = entry.split("\\|", 2);
-                            String packagePath = parts[0];
-                            String firstLabel = parts.length > 1 && !parts[1].isEmpty()
-                                ? parts[1].split(",")[0]
-                                : null;
+                            String packagePath = extractPackageName(targetLabel);
+                            IProject project = BazelProjectCreator.createProjectForPackage(
+                                workspacePath, packagePath, targetLabel, pm, true);
 
-                            String projName = LabelUtils.toProjectName(packagePath);
-                            if (workspaceRoot.getProject(projName).exists()) {
-                                continue;
+                            if (firstProject && project != null) {
+                                if (TargetProjectMapping.readWorkspaceConfig(project) == null) {
+                                    TargetProjectMapping.storeWorkspaceConfig(project, workspacePath, bazelPath, cacheDir);
+                                }
+                                TargetProjectMapping.storeWorkspaceConfigFile(workspacePath, bazelPath, cacheDir);
+                                firstProject = false;
                             }
-                            if (firstLabel == null) {
-                                LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
-                                    "No target label for dependency package: " + packagePath));
-                                continue;
-                            }
-                            BazelProjectCreator.createProjectForPackage(
-                                workspacePath, packagePath, firstLabel, pm, true);
-                            LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
-                                "Auto-created project for dependency package: " + packagePath));
                         } catch (Exception e) {
-                            LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
-                                "Failed to auto-create project for dependency: " + entry, e));
+                            LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
+                                "Failed to import target: " + targetLabel, e));
+                        }
+                    }
+
+                    String loadingMode = bridge.getDependencySourceLoadingMode();
+                    String[] depEntries = bridge.getTransitiveWorkspaceDeps(finalTargets);
+                    bridge.setCachedDependencyPackages(depEntries);
+
+                    if ("full-project".equals(loadingMode) && depEntries != null && depEntries.length > 0) {
+                        for (String entry : depEntries) {
+                            try {
+                                String[] parts = entry.split("\\|", 2);
+                                String packagePath = parts[0];
+                                String firstLabel = parts.length > 1 && !parts[1].isEmpty()
+                                    ? parts[1].split(",")[0]
+                                    : null;
+
+                                String projName = LabelUtils.toProjectName(packagePath);
+                                if (workspaceRoot.getProject(projName).exists()) {
+                                    continue;
+                                }
+                                if (firstLabel == null) {
+                                    LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                                        "No target label for dependency package: " + packagePath));
+                                    continue;
+                                }
+                                BazelProjectCreator.createProjectForPackage(
+                                    workspacePath, packagePath, firstLabel, pm, true);
+                                LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                                    "Auto-created project for dependency package: " + packagePath));
+                            } catch (Exception e) {
+                                LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                                    "Failed to auto-create project for dependency: " + entry, e));
+                            }
                         }
                     }
                 }
-            }
-        }, monitor);
+            }, monitor);
 
-        // Wait for JDT indexer to process all queued projects (including JDK types)
+            preSetJavaCoreOptions();
+            BazelClasspathManager.batchSetClasspathContainers(false);
+        } finally {
+            BazelClasspathContainerInitializer.setImportInProgress(false);
+        }
+
+        // Wait for JDT indexer — containers are already set, so indexer runs once with real data
         LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
-            "Phase 1 complete (" + finalTargets.length + " targets). Waiting for JDT indexes to be ready..."));
+            "All projects created and classpath containers set. Waiting for JDT indexes to be ready..."));
         JobHelpers.waitUntilIndexesReady();
         LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
-            "JDT indexes ready. Starting Phase 2: classpath resolution"));
+            "JDT indexes ready. Import complete."));
 
-        // Phase 2: Resolve classpaths (indexer is ready, reconciliation will find JDK types)
-        BazelClasspathManager.refreshClasspath();
+    }
 
+    private boolean tryFastReload(IProgressMonitor monitor) throws CoreException {
+        String[] config = TargetProjectMapping.readWorkspaceConfigFile();
+        if (config == null) {
+            return false;
+        }
+        java.util.List<String[]> index = TargetProjectMapping.readProjectIndex();
+        if (index.isEmpty()) {
+            return false;
+        }
+
+        String workspacePath = config[0];
+        String bazelPath = config[1];
+        String cacheDir = config[2];
+
+        if (rootFolder != null) {
+            BazelProjectView projectView = BazelProjectView.parse(rootFolder);
+            if (projectView != null && !projectView.getBazelBinary().isEmpty()) {
+                bazelPath = projectView.getBazelBinary();
+            }
+        }
+
+        long startTime = System.currentTimeMillis();
+        LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+            "Fast reload: found " + index.size() + " cached projects, skipping Bazel discovery"));
+
+        BazelBridge bridge = BazelBridge.getInstance();
+        bridge.initialize(workspacePath, bazelPath, cacheDir);
+
+        ensureBazelProjectsGitignore(workspacePath);
+
+        if (rootFolder != null) {
+            BazelProjectView projectView = BazelProjectView.parse(rootFolder);
+            if (projectView != null && !projectView.getDirectories().isEmpty()) {
+                String[] watchDirs = projectView.getDirectories().toArray(new String[0]);
+                bridge.updateWatchPaths(watchDirs);
+            }
+        }
+
+        final String wsPath = workspacePath;
+        final String bzPath = bazelPath;
+        final String cDir = cacheDir;
+        BazelClasspathContainerInitializer.setImportInProgress(true);
+        try {
+            ResourcesPlugin.getWorkspace().run(new IWorkspaceRunnable() {
+                @Override
+                public void run(IProgressMonitor pm) throws CoreException {
+                    boolean firstProject = true;
+                    for (String[] entry : index) {
+                        String projectName = entry[0];
+                        String targetLabel = entry[1];
+                        String packagePath = entry[2];
+                        try {
+                            IProject project = BazelProjectCreator.createProjectForPackage(
+                                wsPath, packagePath, targetLabel, pm, true);
+                            if (firstProject && project != null) {
+                                if (TargetProjectMapping.readWorkspaceConfig(project) == null) {
+                                    TargetProjectMapping.storeWorkspaceConfig(project, wsPath, bzPath, cDir);
+                                }
+                                firstProject = false;
+                            }
+                        } catch (Exception e) {
+                            LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
+                                "Fast reload: failed to recreate project " + projectName, e));
+                        }
+                    }
+                }
+            }, monitor);
+
+            preSetJavaCoreOptions();
+            BazelClasspathManager.batchSetClasspathContainers(true);
+        } finally {
+            BazelClasspathContainerInitializer.setImportInProgress(false);
+        }
+
+        JobHelpers.waitUntilIndexesReady();
+
+        long elapsed = System.currentTimeMillis() - startTime;
+        LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+            "Fast reload complete: " + index.size() + " projects restored in " + elapsed + "ms"));
+
+        return true;
+    }
+
+    private static void ensureBazelProjectsGitignore(String workspacePath) {
+        File gitignore = new File(workspacePath, ".gitignore");
+        String entry = ".bazel-projects/";
+        try {
+            if (gitignore.exists()) {
+                String content = new String(java.nio.file.Files.readAllBytes(gitignore.toPath()),
+                    java.nio.charset.StandardCharsets.UTF_8);
+                for (String line : content.split("\n")) {
+                    if (line.trim().equals(entry)) {
+                        return;
+                    }
+                }
+                String separator = content.endsWith("\n") ? "" : "\n";
+                java.nio.file.Files.write(gitignore.toPath(),
+                    (separator + entry + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    java.nio.file.StandardOpenOption.APPEND);
+            } else {
+                java.nio.file.Files.write(gitignore.toPath(),
+                    (entry + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+            LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                "Added .bazel-projects/ to .gitignore"));
+        } catch (Exception e) {
+            LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                "Failed to update .gitignore: " + e.getMessage()));
+        }
     }
 
     @Override
@@ -232,6 +363,24 @@ public class BazelProjectImporter extends AbstractProjectImporter {
     @Override
     public boolean isResolved(java.io.File rootFolder) {
         return true;
+    }
+
+    private void preSetJavaCoreOptions() {
+        try {
+            Hashtable<String, String> defaultOptions = JavaCore.getDefaultOptions();
+            IVMInstall defaultVM = JavaRuntime.getDefaultVMInstall();
+            if (defaultVM instanceof AbstractVMInstall jvm) {
+                long jdkLevel = CompilerOptions.versionToJdkLevel(jvm.getJavaVersion());
+                String compliance = CompilerOptions.versionFromJdkLevel(jdkLevel);
+                JavaCore.setComplianceOptions(compliance, defaultOptions);
+            } else {
+                JavaCore.setComplianceOptions(JavaCore.VERSION_11, defaultOptions);
+            }
+            JavaCore.setOptions(defaultOptions);
+        } catch (Exception e) {
+            LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                "Failed to pre-set JavaCore options: " + e.getMessage()));
+        }
     }
 
     private String extractPackageName(String targetLabel) {

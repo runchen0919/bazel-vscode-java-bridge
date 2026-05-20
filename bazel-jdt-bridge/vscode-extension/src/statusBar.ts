@@ -24,6 +24,14 @@ export function createStatusBar(context: vscode.ExtensionContext): vscode.Status
 
             if (typeof state === 'number') {
                 if (state === 0) {
+                    statusBarItem.text = '$(sync~spin) Indexing...';
+                    statusBarItem.backgroundColor = undefined;
+                    try {
+                        await vscode.commands.executeCommand('java.execute.workspaceCommand', 'bazel-jdt.waitForIndexesReady');
+                    } catch {
+                        // Command not available or failed, proceed to ready state
+                    }
+                    if (stopped) return;
                     statusBarItem.text = 'Bazel ✓';
                     statusBarItem.backgroundColor = undefined;
                     timer = setTimeout(poll, IDLE_INTERVAL_MS);

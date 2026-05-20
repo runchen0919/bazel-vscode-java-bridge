@@ -9,6 +9,7 @@ import org.eclipse.core.runtime.IStatus;
 import org.eclipse.core.runtime.Platform;
 import org.eclipse.core.runtime.Status;
 import org.eclipse.jdt.ls.core.internal.IDelegateCommandHandler;
+import org.eclipse.jdt.ls.core.internal.JobHelpers;
 
 public class BazelCommandHandler implements IDelegateCommandHandler {
     private static final ILog LOG = Platform.getLog(BazelCommandHandler.class);
@@ -31,6 +32,8 @@ public class BazelCommandHandler implements IDelegateCommandHandler {
                 return handleGetDependencyPackages(arguments);
             case "bazel-jdt.createProjectForPackage":
                 return handleCreateProjectForPackage(arguments, monitor);
+            case "bazel-jdt.waitForIndexesReady":
+                return handleWaitForIndexesReady();
             default:
                 return null;
         }
@@ -152,6 +155,17 @@ public class BazelCommandHandler implements IDelegateCommandHandler {
             LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
                 "Failed to get dependency packages", e));
             return new String[0];
+        }
+    }
+
+    private Object handleWaitForIndexesReady() {
+        try {
+            JobHelpers.waitUntilIndexesReady();
+            return true;
+        } catch (Exception e) {
+            LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                "waitForIndexesReady failed: " + e.getMessage()));
+            return false;
         }
     }
 

@@ -10,6 +10,7 @@ import org.eclipse.jdt.core.IClasspathContainer;
 import org.eclipse.jdt.core.JavaCore;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -44,6 +45,13 @@ public class BazelClasspathManager {
             }
             String[] labels = targetLabels.toArray(new String[0]);
             String[] rawEntries = bridge.computeClasspathMerged(labels);
+
+            String[] cachedEntries = TargetProjectMapping.readCachedClasspath(project, targetLabels.get(0));
+            if (cachedEntries != null && Arrays.equals(rawEntries, cachedEntries)) {
+                LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                    "Classpath unchanged for project " + project.getName() + ", skipping container update"));
+                return;
+            }
 
             BazelClasspathContainer container = new BazelClasspathContainer(
                 rawEntries, getTestSourcePatterns(project),
@@ -115,6 +123,7 @@ public class BazelClasspathManager {
      * Called by BazelCommandHandler for import/sync commands.
      */
     public static void refreshClasspath() {
+        BazelClasspathContainer.resetWarnings();
         try {
             org.eclipse.core.resources.IWorkspace workspace =
                 org.eclipse.core.resources.ResourcesPlugin.getWorkspace();
@@ -159,6 +168,97 @@ public class BazelClasspathManager {
         } catch (Exception e) {
             LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
                 "Failed to refresh classpath", e));
+        }
+    }
+
+    /**
+     * Batch-set classpath containers for all Bazel projects in a single call.
+     * When fromCache is true, reads cached classpath entries from file cache.
+     * When fromCache is false, computes classpath via JNI and persists to cache.
+     */
+    public static void batchSetClasspathContainers(boolean fromCache) {
+        BazelClasspathContainer.resetWarnings();
+        try {
+            org.eclipse.core.resources.IWorkspace workspace =
+                org.eclipse.core.resources.ResourcesPlugin.getWorkspace();
+            IProject[] projects = workspace.getRoot().getProjects();
+            BazelBridge bridge = BazelBridge.getInstance();
+
+            List<org.eclipse.jdt.core.IJavaProject> javaProjects = new ArrayList<>();
+            List<IClasspathContainer> containers = new ArrayList<>();
+            int skipped = 0;
+            long startTime = System.currentTimeMillis();
+
+            for (IProject project : projects) {
+                if (!project.isOpen()) continue;
+                try {
+                    if (!project.hasNature(BazelNature.NATURE_ID)) continue;
+                } catch (CoreException e) {
+                    continue;
+                }
+
+                List<String> targetLabels = TargetProjectMapping.readTargets(project);
+                if (targetLabels.isEmpty()) {
+                    skipped++;
+                    continue;
+                }
+
+                String[] rawEntries;
+                if (fromCache) {
+                    List<String> allEntries = new ArrayList<>();
+                    for (String label : targetLabels) {
+                        String[] cached = TargetProjectMapping.readCachedClasspath(project, label);
+                        if (cached != null) {
+                            java.util.Collections.addAll(allEntries, cached);
+                        }
+                    }
+                    if (allEntries.isEmpty()) {
+                        skipped++;
+                        continue;
+                    }
+                    rawEntries = allEntries.toArray(new String[0]);
+                } else {
+                    String[] labels = targetLabels.toArray(new String[0]);
+                    rawEntries = bridge.computeClasspathMerged(labels);
+                    TargetProjectMapping.storeCachedClasspath(project, targetLabels.get(0), rawEntries);
+                }
+
+                try {
+                    BazelClasspathContainer container = new BazelClasspathContainer(
+                        rawEntries, getTestSourcePatterns(project),
+                        bridge.getDependencyResolutionMode(),
+                        project.getName());
+                    if (container.getClasspathEntries().length == 0) {
+                        skipped++;
+                        continue;
+                    }
+                    javaProjects.add(JavaCore.create(project));
+                    containers.add(container);
+                } catch (Exception e) {
+                    LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                        "Failed to build container for " + project.getName() + ": " + e.getMessage()));
+                    skipped++;
+                }
+            }
+
+            if (!javaProjects.isEmpty()) {
+                JavaCore.setClasspathContainer(
+                    BazelClasspathContainer.CONTAINER_PATH,
+                    javaProjects.toArray(new org.eclipse.jdt.core.IJavaProject[0]),
+                    containers.toArray(new IClasspathContainer[0]),
+                    null
+                );
+            }
+
+            long elapsed = System.currentTimeMillis() - startTime;
+            LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                "Batch set " + javaProjects.size() + " classpath containers"
+                + (fromCache ? " from cache" : " via JNI")
+                + " in " + elapsed + "ms"
+                + (skipped > 0 ? " (" + skipped + " skipped)" : "")));
+        } catch (Exception e) {
+            LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
+                "Failed to batch set classpath containers", e));
         }
     }
 

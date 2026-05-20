@@ -46,10 +46,15 @@ public final class TargetProjectMapping {
         return new QualifiedName(QUALIFIER, KEY);
     }
 
-    private static Path getTargetLabelsDir() throws IOException {
+    static Path getStateDir() throws IOException {
         Bundle bundle = Platform.getBundle("com.bazel.jdt");
         Path stateDir = Platform.getStateLocation(bundle).toFile().toPath();
-        Path labelsDir = stateDir.resolve("target-labels");
+        Files.createDirectories(stateDir);
+        return stateDir;
+    }
+
+    private static Path getTargetLabelsDir() throws IOException {
+        Path labelsDir = getStateDir().resolve("target-labels");
         Files.createDirectories(labelsDir);
         return labelsDir;
     }
@@ -64,6 +69,11 @@ public final class TargetProjectMapping {
             String value = String.join("\n", targetLabels);
             Files.writeString(labelsFile, value);
             LOG.info("Stored target labels for project '" + project.getName() + "': " + targetLabels.size() + " labels");
+            if (!targetLabels.isEmpty()) {
+                String firstLabel = targetLabels.get(0);
+                String packagePath = LabelUtils.extractPackageName(firstLabel);
+                updateProjectIndex(project.getName(), firstLabel, packagePath);
+            }
         } catch (IOException e) {
             LOG.error("Failed to store target labels for project '" + project.getName() + "'", e);
         }
@@ -142,10 +152,50 @@ public final class TargetProjectMapping {
         } catch (IOException e) {
             LOG.error("Failed to clear target labels file for project '" + project.getName() + "'", e);
         }
+        removeFromProjectIndex(project.getName());
         try {
             project.setPersistentProperty(propertyName(), null);
         } catch (CoreException e) {
             LOG.error("Failed to clear target labels property for project '" + project.getName() + "'", e);
+        }
+    }
+
+    private static final String WORKSPACE_CONFIG_FILE = "_workspace_config";
+
+    public static void storeWorkspaceConfigFile(String workspacePath, String bazelPath, String cacheDir) {
+        try {
+            Path configFile = getStateDir().resolve(WORKSPACE_CONFIG_FILE);
+            String content = "workspacePath=" + workspacePath + "\n"
+                + "bazelPath=" + (bazelPath != null ? bazelPath : "bazel") + "\n"
+                + "cacheDir=" + (cacheDir != null ? cacheDir : BazelCommandHandler.DEFAULT_CACHE_DIR) + "\n";
+            Files.writeString(configFile, content);
+        } catch (IOException e) {
+            LOG.error("Failed to store workspace config file", e);
+        }
+    }
+
+    public static String[] readWorkspaceConfigFile() {
+        try {
+            Path configFile = getStateDir().resolve(WORKSPACE_CONFIG_FILE);
+            if (!Files.exists(configFile)) return null;
+            String content = Files.readString(configFile);
+            String ws = null, bp = null, cd = null;
+            for (String line : content.split("\n")) {
+                int eq = line.indexOf('=');
+                if (eq < 0) continue;
+                String key = line.substring(0, eq);
+                String val = line.substring(eq + 1);
+                switch (key) {
+                    case "workspacePath": ws = val; break;
+                    case "bazelPath": bp = val; break;
+                    case "cacheDir": cd = val; break;
+                }
+            }
+            if (ws == null || ws.isEmpty()) return null;
+            return new String[]{ws, bp != null ? bp : "bazel", cd != null ? cd : BazelCommandHandler.DEFAULT_CACHE_DIR};
+        } catch (IOException e) {
+            LOG.error("Failed to read workspace config file", e);
+            return null;
         }
     }
 
@@ -198,6 +248,65 @@ public final class TargetProjectMapping {
         }
     }
 
+    private static final String INDEX_FILE = "_index";
+
+    public static void updateProjectIndex(String projectName, String targetLabel, String packagePath) {
+        try {
+            Path indexFile = getTargetLabelsDir().resolve(INDEX_FILE);
+            List<String> lines = Files.exists(indexFile)
+                ? new ArrayList<>(Files.readAllLines(indexFile)) : new ArrayList<>();
+            String prefix = projectName + "|";
+            String newLine = projectName + "|" + targetLabel + "|" + packagePath;
+            boolean replaced = false;
+            for (int i = 0; i < lines.size(); i++) {
+                if (lines.get(i).startsWith(prefix)) {
+                    lines.set(i, newLine);
+                    replaced = true;
+                    break;
+                }
+            }
+            if (!replaced) {
+                lines.add(newLine);
+            }
+            Files.writeString(indexFile, String.join("\n", lines) + "\n");
+        } catch (IOException e) {
+            LOG.error("Failed to update project index for '" + projectName + "'", e);
+        }
+    }
+
+    public static void removeFromProjectIndex(String projectName) {
+        try {
+            Path indexFile = getTargetLabelsDir().resolve(INDEX_FILE);
+            if (!Files.exists(indexFile)) return;
+            List<String> lines = new ArrayList<>(Files.readAllLines(indexFile));
+            String prefix = projectName + "|";
+            lines.removeIf(line -> line.startsWith(prefix));
+            Files.writeString(indexFile, String.join("\n", lines) + (lines.isEmpty() ? "" : "\n"));
+        } catch (IOException e) {
+            LOG.error("Failed to remove from project index for '" + projectName + "'", e);
+        }
+    }
+
+    public static List<String[]> readProjectIndex() {
+        try {
+            Path indexFile = getTargetLabelsDir().resolve(INDEX_FILE);
+            if (!Files.exists(indexFile)) return Collections.emptyList();
+            List<String[]> result = new ArrayList<>();
+            for (String line : Files.readAllLines(indexFile)) {
+                String trimmed = line.trim();
+                if (trimmed.isEmpty()) continue;
+                String[] parts = trimmed.split("\\|", 3);
+                if (parts.length == 3) {
+                    result.add(parts);
+                }
+            }
+            return result;
+        } catch (IOException e) {
+            LOG.error("Failed to read project index", e);
+            return Collections.emptyList();
+        }
+    }
+
     private static String sanitizeLabel(String label) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
@@ -209,9 +318,7 @@ public final class TargetProjectMapping {
     }
 
     private static Path getCacheDir() throws IOException {
-        Bundle bundle = Platform.getBundle("com.bazel.jdt");
-        Path stateDir = Platform.getStateLocation(bundle).toFile().toPath();
-        Path cacheDir = stateDir.resolve("classpath-cache");
+        Path cacheDir = getStateDir().resolve("classpath-cache");
         Files.createDirectories(cacheDir);
         return cacheDir;
     }

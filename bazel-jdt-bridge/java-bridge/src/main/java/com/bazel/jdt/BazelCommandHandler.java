@@ -178,6 +178,7 @@ public class BazelCommandHandler implements IDelegateCommandHandler {
                 throw new IllegalArgumentException("Project name required");
             }
             String projectName = (String) arguments.get(0);
+            BazelRuntimeClasspathEntryResolver.setActiveDebugProject(projectName);
 
             IProject project = ResourcesPlugin.getWorkspace().getRoot().getProject(projectName);
             if (!project.exists()) {

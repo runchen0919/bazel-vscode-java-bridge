@@ -28,6 +28,13 @@
         </delegateCommandHandler>
     </extension>
 
+    <extension point="org.eclipse.jdt.launching.runtimeClasspathEntryResolvers">
+        <runtimeClasspathEntryResolver
+            container="com.bazel.jdt.BAZEL_CONTAINER"
+            class="com.bazel.jdt.BazelRuntimeClasspathEntryResolver"
+            id="com.bazel.jdt.bazelContainerResolver"/>
+    </extension>
+
     <extension point="org.eclipse.core.resources.natures"
                id="bazelNature"
                name="Bazel Project Nature">

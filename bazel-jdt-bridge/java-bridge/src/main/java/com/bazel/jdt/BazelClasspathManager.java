@@ -124,6 +124,7 @@ public class BazelClasspathManager {
      */
     public static void refreshClasspath() {
         BazelClasspathContainer.resetWarnings();
+        BazelRuntimeClasspathEntryResolver.clearCache();
         try {
             org.eclipse.core.resources.IWorkspace workspace =
                 org.eclipse.core.resources.ResourcesPlugin.getWorkspace();

@@ -197,7 +197,7 @@ public class BazelCommandHandler implements IDelegateCommandHandler {
             LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
                 "Pre-debug build for " + projectName + ": " + targets));
 
-            bridge.runAspectBuild(targets.toArray(new String[0]), null);
+            bridge.buildTargets(targets.toArray(new String[0]), null);
 
             LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
                 "Pre-debug build complete for " + projectName));

@@ -146,6 +146,23 @@ public final class BazelBridge {
         }
     }
 
+    public boolean buildTargets(String[] targets, String[] buildFlags) {
+        long h = snapshotHandle();
+        try {
+            return jniExecutor.submit(() -> nativeBuildTargets(h, targets, buildFlags))
+                .get(DISCOVER_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted during buildTargets", e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException) throw (RuntimeException) cause;
+            throw new RuntimeException("buildTargets failed", cause);
+        } catch (TimeoutException e) {
+            throw new RuntimeException("buildTargets timed out", e);
+        }
+    }
+
     public String[] computeClasspath(String targetLabel) {
         long h = snapshotHandle();
         try {
@@ -337,6 +354,7 @@ public final class BazelBridge {
     private native String[] nativeQueryTargets(long handle, String[] scopePatterns);
     private native void nativePopulateGraph(long handle);
     private native String[] nativeRunAspectBuild(long handle, String[] targets, String[] buildFlags, String syncMode);
+    private native boolean nativeBuildTargets(long handle, String[] targets, String[] buildFlags);
     private native String[] nativeComputeClasspath(long handle, String targetLabel, String[] buildFlags);
     private native String[] nativeComputeClasspathMerged(long handle, String[] labels);
     private native int nativeGetSyncState(long handle);

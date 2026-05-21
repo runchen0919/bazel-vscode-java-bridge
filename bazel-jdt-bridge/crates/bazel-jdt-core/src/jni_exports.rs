@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use jni::objects::{JClass, JObject, JObjectArray, JString};
-use jni::sys::{jint, jlong, jobjectArray, jsize};
+use jni::sys::{jboolean, jint, jlong, jobjectArray, jsize};
 use jni::JNIEnv;
 
 static REGISTRY: OnceLock<Mutex<HashMap<u64, Box<BazelJdtState>>>> = OnceLock::new();
@@ -493,6 +493,42 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeRunAspectBuild(
     match create_string_array(&mut env, &target_vec) {
         Ok(arr) => arr,
         Err(_) => std::ptr::null_mut(),
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeBuildTargets(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    targets: JObjectArray,
+    build_flags: JObjectArray,
+) -> jboolean {
+    let state = match get_state(&mut env, handle) {
+        Some(s) => s,
+        None => return 0,
+    };
+
+    let target_vec = match parse_java_string_array(&mut env, &targets) {
+        Some(t) => t,
+        None => return 0,
+    };
+    let build_flags_vec = parse_java_string_array(&mut env, &build_flags);
+    let build_flags_ref: Option<&[String]> = build_flags_vec.as_deref();
+
+    log::info!(
+        "nativeBuildTargets: plain build for {} targets",
+        target_vec.len()
+    );
+    match state.invoker.build_targets_sync(&target_vec, build_flags_ref) {
+        Ok(()) => {
+            log::info!("Plain build complete");
+            1
+        }
+        Err(e) => {
+            log::warn!("Plain build failed: {}", e);
+            0
+        }
     }
 }
 

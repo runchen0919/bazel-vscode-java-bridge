@@ -172,6 +172,35 @@ impl BazelInvoker {
         Ok(stderr)
     }
 
+    /// Synchronous plain build — compiles targets without aspects or graph updates.
+    pub fn build_targets_sync(
+        &self,
+        targets: &[String],
+        build_flags: Option<&[String]>,
+    ) -> Result<(), BazelError> {
+        if targets.is_empty() {
+            return Ok(());
+        }
+
+        let mut args = vec!["build".to_string()];
+        if let Some(flags) = build_flags {
+            args.extend(flags.iter().map(|s| s.to_string()));
+        }
+        args.extend(targets.iter().cloned());
+
+        log::info!("Plain build for {} targets", targets.len());
+        let output = run_bazel_command_sync(&self.bazel_path, &self.workspace_root, &args)?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(BazelError::CommandFailed {
+                message: format!("bazel build failed: {}", stderr),
+            });
+        }
+
+        Ok(())
+    }
+
     /// Synchronous full classpath resolution via aspect build.
     pub fn resolve_full_classpath_sync(
         &self,

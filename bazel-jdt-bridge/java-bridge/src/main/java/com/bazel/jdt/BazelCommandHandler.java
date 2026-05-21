@@ -3,6 +3,7 @@ package com.bazel.jdt;
 import java.util.List;
 
 import org.eclipse.core.resources.IProject;
+import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.ILog;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.IStatus;
@@ -34,6 +35,8 @@ public class BazelCommandHandler implements IDelegateCommandHandler {
                 return handleCreateProjectForPackage(arguments, monitor);
             case "bazel-jdt.waitForIndexesReady":
                 return handleWaitForIndexesReady();
+            case "bazel-jdt.buildTarget":
+                return handleBuildTarget(arguments);
             default:
                 return null;
         }
@@ -166,6 +169,43 @@ public class BazelCommandHandler implements IDelegateCommandHandler {
             LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
                 "waitForIndexesReady failed: " + e.getMessage()));
             return false;
+        }
+    }
+
+    private Object handleBuildTarget(List<Object> arguments) {
+        try {
+            if (arguments.isEmpty() || !(arguments.get(0) instanceof String)) {
+                throw new IllegalArgumentException("Project name required");
+            }
+            String projectName = (String) arguments.get(0);
+
+            IProject project = ResourcesPlugin.getWorkspace().getRoot().getProject(projectName);
+            if (!project.exists()) {
+                throw new IllegalArgumentException("Project not found: " + projectName);
+            }
+
+            List<String> targets = TargetProjectMapping.readTargets(project);
+            if (targets.isEmpty()) {
+                throw new IllegalStateException("No Bazel targets for project: " + projectName);
+            }
+
+            BazelBridge bridge = BazelBridge.getInstance();
+            if (!bridge.isInitialized()) {
+                throw new IllegalStateException(
+                    "Bazel project not imported yet. Import the project first.");
+            }
+            LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                "Pre-debug build for " + projectName + ": " + targets));
+
+            bridge.runAspectBuild(targets.toArray(new String[0]), null);
+
+            LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                "Pre-debug build complete for " + projectName));
+            return null;
+        } catch (Exception e) {
+            LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
+                "Pre-debug build failed", e));
+            throw new RuntimeException("Pre-debug build failed: " + e.getMessage(), e);
         }
     }
 

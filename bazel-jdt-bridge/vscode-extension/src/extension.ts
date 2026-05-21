@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { registerImportCommand, registerRuntimeCommands } from './commands';
+import { BazelDebugConfigurationProvider } from './debugAdapter';
 import { createStatusBar } from './statusBar';
 import { getConfig } from './config';
 import { parseBazelprojectFile, resolveScopePatterns } from './bazelproject';
@@ -33,6 +34,11 @@ function activateFull(context: vscode.ExtensionContext, workspaceRoot: string) {
     const statusBarItem = createStatusBar(context);
     registerImportCommand(context);
     registerRuntimeCommands(context);
+    context.subscriptions.push(
+        vscode.debug.registerDebugConfigurationProvider(
+            'java', new BazelDebugConfigurationProvider()
+        )
+    );
 
     let dependencyPackageCache: string[] = [];
 

@@ -24,6 +24,7 @@
             <command id="bazel-jdt.cleanCache"/>
             <command id="bazel-jdt.getSyncState"/>
             <command id="bazel-jdt.shutdown"/>
+            <command id="bazel-jdt.buildTarget"/>
         </delegateCommandHandler>
     </extension>
 

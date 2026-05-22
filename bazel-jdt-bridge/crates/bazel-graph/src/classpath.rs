@@ -85,7 +85,7 @@ impl ComputedClasspath {
             | TargetKind::JavaBinary
             | TargetKind::JavaTest
             | TargetKind::Unknown => {
-                Self::compute_for_library(graph, target_label, is_test, workspace_root)
+                Self::compute_for_library(graph, target_label, is_test, workspace_root, &target_kind)
             }
         }
     }
@@ -176,6 +176,7 @@ impl ComputedClasspath {
         target_label: &str,
         is_test_context: bool,
         workspace_root: Option<&str>,
+        target_kind: &TargetKind,
     ) -> Result<Self, GraphError> {
         let deps = graph.transitive_deps(target_label)?;
 
@@ -244,10 +245,34 @@ impl ComputedClasspath {
             }
         }
 
-        let output_jars = graph
+        let mut output_jars: Vec<String> = graph
             .get_target_jars(target_label)
             .map(|jars| jars.iter().map(|j| j.classpath_path.clone()).collect())
             .unwrap_or_default();
+
+        if *target_kind == TargetKind::JavaBinary {
+            for dep_label in &deps {
+                if is_bazel_internal_label(dep_label) {
+                    continue;
+                }
+                if let Some(dep_jars) = graph.get_target_jars(dep_label) {
+                    for jar in dep_jars {
+                        if !output_jars.contains(&jar.classpath_path) {
+                            output_jars.push(jar.classpath_path.clone());
+                        }
+                    }
+                }
+            }
+
+            if output_jars.len() > 1 {
+                output_jars.retain(|jar_path| {
+                    match std::fs::metadata(jar_path) {
+                        Ok(meta) => meta.len() >= 1024,
+                        Err(_) => true,
+                    }
+                });
+            }
+        }
 
         Ok(ComputedClasspath {
             target_label: target_label.to_string(),
@@ -1763,6 +1788,184 @@ mod tests {
         assert!(
             lines[0].contains("/workspace/lib/src"),
             "should preserve source attachment from the dependency entry"
+        );
+    }
+
+    fn make_target_with_kind(
+        label: &str,
+        kind: &str,
+        deps: Vec<&str>,
+        runtime_deps: Vec<&str>,
+        jar_paths: Vec<&str>,
+    ) -> TargetIdeInfo {
+        let jars: Vec<JarInfo> = jar_paths
+            .iter()
+            .map(|p| JarInfo {
+                jar: ArtifactLocation {
+                    absolute_path: Some(p.to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .collect();
+
+        TargetIdeInfo {
+            label: label.to_string(),
+            kind: kind.to_string(),
+            build_file: None,
+            java_info: Some(JavaIdeInfo {
+                jars,
+                ..Default::default()
+            }),
+            deps: deps.iter().map(|s| s.to_string()).collect(),
+            runtime_deps: runtime_deps.iter().map(|s| s.to_string()).collect(),
+            exports: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_java_binary_no_srcs_includes_runtime_deps_jars() {
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target_with_kind(
+                "//app:app",
+                "java_binary",
+                vec![],
+                vec!["//lib:lib"],
+                vec!["/workspace/bazel-bin/app/app.jar"],
+            ),
+            make_target_with_kind(
+                "//lib:lib",
+                "java_library",
+                vec![],
+                vec![],
+                vec!["/workspace/bazel-bin/lib/liblib.jar"],
+            ),
+        ];
+
+        graph.populate_from_aspects(&results, Path::new("/workspace"));
+        let cp =
+            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaBinary, None)
+                .unwrap();
+
+        assert!(
+            cp.output_jars
+                .contains(&"/workspace/bazel-bin/lib/liblib.jar".to_string()),
+            "java_binary output_jars should contain runtime_deps jar, got: {:?}",
+            cp.output_jars
+        );
+    }
+
+    #[test]
+    fn test_java_binary_with_srcs_includes_dep_jars() {
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target_with_kind(
+                "//app:app",
+                "java_binary",
+                vec!["//lib:lib"],
+                vec![],
+                vec!["/workspace/bazel-bin/app/app.jar"],
+            ),
+            make_target_with_kind(
+                "//lib:lib",
+                "java_library",
+                vec![],
+                vec![],
+                vec!["/workspace/bazel-bin/lib/liblib.jar"],
+            ),
+        ];
+
+        graph.populate_from_aspects(&results, Path::new("/workspace"));
+        let cp =
+            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaBinary, None)
+                .unwrap();
+
+        assert!(
+            cp.output_jars
+                .contains(&"/workspace/bazel-bin/app/app.jar".to_string()),
+            "should contain target's own jar, got: {:?}",
+            cp.output_jars
+        );
+        assert!(
+            cp.output_jars
+                .contains(&"/workspace/bazel-bin/lib/liblib.jar".to_string()),
+            "should contain dep jar, got: {:?}",
+            cp.output_jars
+        );
+    }
+
+    #[test]
+    fn test_java_binary_dep_jar_deduplicated_in_serialization() {
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target_with_kind(
+                "//app:app",
+                "java_binary",
+                vec!["//lib:lib"],
+                vec![],
+                vec!["/workspace/bazel-bin/app/app.jar"],
+            ),
+            make_target_with_kind(
+                "//lib:lib",
+                "java_library",
+                vec![],
+                vec![],
+                vec!["/workspace/bazel-bin/lib/liblib.jar"],
+            ),
+        ];
+
+        graph.populate_from_aspects(&results, Path::new("/workspace"));
+        let cp =
+            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaBinary, None)
+                .unwrap();
+
+        let lines = cp.to_pipe_delimited_entries();
+        let lib_count = lines
+            .iter()
+            .filter(|l| l.contains("/workspace/bazel-bin/lib/liblib.jar"))
+            .count();
+        assert_eq!(
+            lib_count, 1,
+            "dep jar should appear exactly once in serialized output, got: {:?}",
+            lines
+        );
+    }
+
+    #[test]
+    fn test_java_library_output_jars_unchanged() {
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            make_target_with_kind(
+                "//lib:lib",
+                "java_library",
+                vec!["//lib:dep"],
+                vec![],
+                vec!["/workspace/bazel-bin/lib/liblib.jar"],
+            ),
+            make_target_with_kind(
+                "//lib:dep",
+                "java_library",
+                vec![],
+                vec![],
+                vec!["/workspace/bazel-bin/lib/libdep.jar"],
+            ),
+        ];
+
+        graph.populate_from_aspects(&results, Path::new("/workspace"));
+        let cp =
+            ComputedClasspath::compute_for(&graph, "//lib:lib", TargetKind::JavaLibrary, None)
+                .unwrap();
+
+        assert_eq!(
+            cp.output_jars,
+            vec!["/workspace/bazel-bin/lib/liblib.jar"],
+            "java_library output_jars should only contain target's own jars"
+        );
+        assert!(
+            !cp.output_jars
+                .contains(&"/workspace/bazel-bin/lib/libdep.jar".to_string()),
+            "java_library output_jars should NOT contain dep jars"
         );
     }
 }

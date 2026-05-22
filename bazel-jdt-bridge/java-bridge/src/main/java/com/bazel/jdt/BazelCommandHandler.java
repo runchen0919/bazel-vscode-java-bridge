@@ -202,6 +202,10 @@ public class BazelCommandHandler implements IDelegateCommandHandler {
 
             LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
                 "Pre-debug build complete for " + projectName));
+
+            BazelRuntimeClasspathEntryResolver.clearCache();
+            BazelClasspathManager.setMergedClasspathContainer(project);
+
             return null;
         } catch (Exception e) {
             LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",

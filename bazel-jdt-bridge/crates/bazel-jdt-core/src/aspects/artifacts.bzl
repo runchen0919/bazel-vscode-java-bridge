@@ -30,16 +30,18 @@ def artifact_location(f):
     return to_artifact_location(
         root_path = root_path,
         relative_path = relative_path,
+        absolute_path = f.path,
         is_source = f.is_source,
         is_external = is_external_artifact(f.owner),
     )
 
-def to_artifact_location(root_path, relative_path, is_source, is_external):
+def to_artifact_location(root_path, relative_path, is_source, is_external, absolute_path = None):
     """Creates creates an ArtifactLocation proto."""
 
     return struct_omit_none(
         relative_path = relative_path,
         root_path = root_path,
+        absolute_path = absolute_path,
         is_source = is_source,
         is_external = is_external,
     )

@@ -5,10 +5,46 @@ use petgraph::Direction;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// A classpath JAR paired with its resolved source attachment.
+/// Stores both the full JAR path and an optional compile JAR (ijar) fallback.
+/// Use `effective_path()` to get the best available path at query time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedJar {
-    pub classpath_path: String,
+    pub full_jar_path: String,
+    pub compile_jar_path: Option<String>,
+    pub runtime_jar_path: Option<String>,
     pub source_path: Option<String>,
+}
+
+fn is_ijar_path(path: &str) -> bool {
+    path.contains("/_ijar/")
+}
+
+impl ResolvedJar {
+    pub fn effective_path(&self) -> &str {
+        if std::path::Path::new(&self.full_jar_path).exists() {
+            &self.full_jar_path
+        } else if let Some(ref runtime) = self.runtime_jar_path {
+            if std::path::Path::new(runtime).exists() {
+                runtime
+            } else if let Some(ref compile) = self.compile_jar_path {
+                if is_ijar_path(compile) {
+                    &self.full_jar_path
+                } else {
+                    compile
+                }
+            } else {
+                &self.full_jar_path
+            }
+        } else if let Some(ref compile) = self.compile_jar_path {
+            if is_ijar_path(compile) {
+                &self.full_jar_path
+            } else {
+                compile
+            }
+        } else {
+            &self.full_jar_path
+        }
+    }
 }
 
 /// Dependency graph of Bazel targets
@@ -228,26 +264,27 @@ impl DependencyGraph {
                     .filter_map(|j| normalize_artifact_path(j, workspace_root))
                     .collect();
 
-                let jars = if full_jars.is_empty() {
-                    compile_jars
+                let runtime_jars: Vec<String> = java_info
+                    .runtime_jars
+                    .iter()
+                    .filter_map(|j| normalize_artifact_path(j, workspace_root))
+                    .collect();
+
+                let (effective_full, effective_compile) = if full_jars.is_empty() {
+                    (compile_jars, Vec::new())
                 } else {
-                    full_jars
-                        .into_iter()
-                        .enumerate()
-                        .map(|(i, jar)| {
-                            if std::path::Path::new(&jar).exists() {
-                                jar
-                            } else if i < compile_jars.len() {
-                                compile_jars[i].clone()
-                            } else {
-                                jar
-                            }
-                        })
-                        .collect()
+                    (full_jars, compile_jars)
                 };
 
-                if !jars.is_empty() {
-                    let resolved = build_resolved_jars(java_info, &jars, workspace_root, label);
+                if !effective_full.is_empty() {
+                    let resolved = build_resolved_jars(
+                        java_info,
+                        &effective_full,
+                        &effective_compile,
+                        &runtime_jars,
+                        workspace_root,
+                        label,
+                    );
                     self.set_target_jars(label, resolved);
                 }
 
@@ -614,8 +651,12 @@ fn normalize_artifact_path(
     workspace_root: &std::path::Path,
 ) -> Option<String> {
     let path = artifact.best_path()?;
-    Some(if artifact.is_source {
+    Some(if artifact.is_source || path.starts_with("external/") {
         resolve_external_path(&path, workspace_root).unwrap_or(path)
+    } else if path.starts_with('/') {
+        path
+    } else if path.starts_with("bazel-out/") {
+        workspace_root.join(&path).to_string_lossy().into_owned()
     } else {
         path
     })
@@ -624,7 +665,9 @@ fn normalize_artifact_path(
 /// Build `Vec<ResolvedJar>` using a 6-strategy source resolution chain.
 fn build_resolved_jars(
     java_info: &bazel_aspect::JavaIdeInfo,
-    classpath_jars: &[String],
+    full_jars: &[String],
+    compile_jars: &[String],
+    runtime_jars: &[String],
     workspace_root: &std::path::Path,
     label: &str,
 ) -> Vec<ResolvedJar> {
@@ -669,10 +712,32 @@ fn build_resolved_jars(
         })
         .collect();
 
-    let single_source = if all_source_jars.len() == 1 && classpath_jars.len() == 1 {
+    let single_source = if all_source_jars.len() == 1 && full_jars.len() == 1 {
         all_source_jars.into_iter().next()
     } else {
         None
+    };
+
+    let runtime_jar_by_filename: HashMap<String, Option<String>> = {
+        let mut counts: HashMap<String, Vec<String>> = HashMap::new();
+        for rt_path in runtime_jars {
+            if let Some(fname) = std::path::Path::new(rt_path).file_name() {
+                counts
+                    .entry(fname.to_string_lossy().into_owned())
+                    .or_default()
+                    .push(rt_path.clone());
+            }
+        }
+        counts
+            .into_iter()
+            .map(|(fname, paths)| {
+                if paths.len() == 1 {
+                    (fname, Some(paths.into_iter().next().unwrap()))
+                } else {
+                    (fname, None)
+                }
+            })
+            .collect()
     };
 
     let ws_str = workspace_root.to_str().unwrap_or("");
@@ -681,9 +746,10 @@ fn build_resolved_jars(
     let mut maven_cache_hits: u32 = 0;
     let mut with_source: u32 = 0;
 
-    let result = classpath_jars
+    let result = full_jars
         .iter()
-        .map(|jar_path| {
+        .enumerate()
+        .map(|(i, jar_path)| {
             let mut strategy = "";
             let source_path = class_to_source
                 .get(jar_path)
@@ -770,8 +836,18 @@ fn build_resolved_jars(
                 with_source += 1;
             }
 
+            let runtime_jar_path = std::path::Path::new(jar_path)
+                .file_name()
+                .and_then(|fname| {
+                    runtime_jar_by_filename
+                        .get(fname.to_string_lossy().as_ref())
+                        .and_then(|opt| opt.clone())
+                });
+
             ResolvedJar {
-                classpath_path: jar_path.clone(),
+                full_jar_path: jar_path.clone(),
+                compile_jar_path: compile_jars.get(i).cloned(),
+                runtime_jar_path,
                 source_path,
             }
         })
@@ -781,7 +857,7 @@ fn build_resolved_jars(
         "[bazel-jdt] Source resolution for '{}': {}/{} with source, {} stubs discarded, {} maven cache hits",
         label,
         with_source,
-        classpath_jars.len(),
+        full_jars.len(),
         stubs_discarded,
         maven_cache_hits
     );
@@ -1083,7 +1159,7 @@ mod tests {
 
         assert_eq!(graph.target_count(), 1);
         let jars = graph.get_target_jars("//foo:lib").unwrap();
-        assert_eq!(jars[0].classpath_path, "/second.jar");
+        assert_eq!(jars[0].full_jar_path, "/second.jar");
     }
 
     #[test]
@@ -1280,7 +1356,7 @@ mod tests {
         );
         let jar_list = jars.unwrap();
         assert_eq!(jar_list.len(), 1);
-        assert_eq!(jar_list[0].classpath_path, "/guava.jar");
+        assert_eq!(jar_list[0].full_jar_path, "/guava.jar");
     }
 
     #[test]
@@ -1320,9 +1396,14 @@ mod tests {
         let jars = graph.get_target_jars("//lib:mylib").unwrap();
         assert_eq!(jars.len(), 1);
         assert_eq!(
-            jars[0].classpath_path,
+            jars[0].full_jar_path,
             full_jar_path.to_string_lossy(),
-            "Full JARs should be preferred over compile_jars when they exist on disk"
+            "full_jar_path should store the full JAR path"
+        );
+        assert_eq!(
+            jars[0].compile_jar_path.as_deref(),
+            Some("/compile.jar"),
+            "compile_jar_path should store the compile JAR path"
         );
         let _ = std::fs::remove_file(&full_jar_path);
     }
@@ -1365,9 +1446,14 @@ mod tests {
         let jars = graph.get_target_jars("//thrift:service").unwrap();
         assert_eq!(jars.len(), 1);
         assert_eq!(
-            jars[0].classpath_path,
+            jars[0].full_jar_path,
             full_jar_path.to_string_lossy(),
-            "Derived internal full JARs should be preferred over header JARs when they exist"
+            "full_jar_path should store the full JAR path"
+        );
+        assert_eq!(
+            jars[0].compile_jar_path.as_deref(),
+            Some("/libservice-hjar.jar"),
+            "compile_jar_path should store the header JAR path"
         );
         let _ = std::fs::remove_file(&full_jar_path);
     }
@@ -1403,7 +1489,7 @@ mod tests {
         let jars = graph.get_target_jars("//lib:plain").unwrap();
         assert_eq!(jars.len(), 1);
         assert_eq!(
-            jars[0].classpath_path, "/libplain.jar",
+            jars[0].full_jar_path, "/libplain.jar",
             "jars should be kept when compile_jars is empty"
         );
     }
@@ -1440,8 +1526,201 @@ mod tests {
         let jars = graph.get_target_jars("//lib:fallback").unwrap();
         assert_eq!(jars.len(), 1);
         assert_eq!(
-            jars[0].classpath_path, "/existing/libfallback-hjar.jar",
-            "Should fall back to compile_jar (hjar) when full JAR does not exist on disk"
+            jars[0].full_jar_path, "/nonexistent/libfallback.jar",
+            "full_jar_path should store the full JAR path even when it does not exist"
+        );
+        assert_eq!(
+            jars[0].compile_jar_path.as_deref(),
+            Some("/existing/libfallback-hjar.jar"),
+            "compile_jar_path should store the hjar path"
+        );
+        assert_eq!(
+            jars[0].effective_path(),
+            "/existing/libfallback-hjar.jar",
+            "effective_path() should fall back to compile_jar when full JAR does not exist"
+        );
+    }
+
+    #[test]
+    fn test_effective_path_returns_full_jar_when_exists() {
+        let tmp_dir = std::env::temp_dir();
+        let jar_file = tmp_dir.join("test_effective_path_exists.jar");
+        std::fs::write(&jar_file, b"fake jar").unwrap();
+
+        let jar = ResolvedJar {
+            full_jar_path: jar_file.to_string_lossy().into_owned(),
+            compile_jar_path: Some("/compile/ijar.jar".to_string()),
+            runtime_jar_path: None,
+            source_path: None,
+        };
+
+        assert_eq!(jar.effective_path(), jar_file.to_string_lossy().as_ref());
+        let _ = std::fs::remove_file(&jar_file);
+    }
+
+    #[test]
+    fn test_effective_path_returns_compile_jar_when_full_missing() {
+        let jar = ResolvedJar {
+            full_jar_path: "/nonexistent/full.jar".to_string(),
+            compile_jar_path: Some("/compile/ijar.jar".to_string()),
+            runtime_jar_path: None,
+            source_path: None,
+        };
+
+        assert_eq!(jar.effective_path(), "/compile/ijar.jar");
+    }
+
+    #[test]
+    fn test_effective_path_returns_full_jar_when_neither_exists() {
+        let jar = ResolvedJar {
+            full_jar_path: "/nonexistent/full.jar".to_string(),
+            compile_jar_path: None,
+            runtime_jar_path: None,
+            source_path: None,
+        };
+
+        assert_eq!(jar.effective_path(), "/nonexistent/full.jar");
+    }
+
+    #[test]
+    fn test_effective_path_prefers_runtime_jar_over_compile_jar() {
+        let tmp_dir = std::env::temp_dir();
+        let runtime_file = tmp_dir.join("test_runtime_jar_preferred.jar");
+        std::fs::write(&runtime_file, b"runtime jar").unwrap();
+
+        let jar = ResolvedJar {
+            full_jar_path: "/nonexistent/full.jar".to_string(),
+            compile_jar_path: Some("/compile/ijar.jar".to_string()),
+            runtime_jar_path: Some(runtime_file.to_string_lossy().into_owned()),
+            source_path: None,
+        };
+
+        assert_eq!(jar.effective_path(), runtime_file.to_string_lossy().as_ref());
+        let _ = std::fs::remove_file(&runtime_file);
+    }
+
+    #[test]
+    fn test_effective_path_falls_to_compile_when_runtime_missing() {
+        let jar = ResolvedJar {
+            full_jar_path: "/nonexistent/full.jar".to_string(),
+            compile_jar_path: Some("/compile/ijar.jar".to_string()),
+            runtime_jar_path: Some("/nonexistent/runtime.jar".to_string()),
+            source_path: None,
+        };
+
+        assert_eq!(jar.effective_path(), "/compile/ijar.jar");
+    }
+
+    #[test]
+    fn test_effective_path_skips_ijar_compile_jar() {
+        let jar = ResolvedJar {
+            full_jar_path: "/nonexistent/libaws_java_sdk_core.jar".to_string(),
+            compile_jar_path: Some(
+                "/bazel-out/bin/external/maven/com/amazonaws/aws-java-sdk-core/_ijar/downloaded-ijar.jar"
+                    .to_string(),
+            ),
+            runtime_jar_path: None,
+            source_path: None,
+        };
+
+        assert_eq!(
+            jar.effective_path(),
+            "/nonexistent/libaws_java_sdk_core.jar",
+            "effective_path() should skip ijar compile_jar and return full_jar_path"
+        );
+    }
+
+    #[test]
+    fn test_effective_path_allows_non_ijar_compile_jar() {
+        let jar = ResolvedJar {
+            full_jar_path: "/nonexistent/full.jar".to_string(),
+            compile_jar_path: Some("/compile/normal-header.jar".to_string()),
+            runtime_jar_path: None,
+            source_path: None,
+        };
+
+        assert_eq!(
+            jar.effective_path(),
+            "/compile/normal-header.jar",
+            "effective_path() should still return non-ijar compile_jar"
+        );
+    }
+
+    #[test]
+    fn test_effective_path_runtime_jar_unaffected_by_ijar_filter() {
+        let tmp_dir = std::env::temp_dir();
+        let runtime_file = tmp_dir.join("test_runtime_ijar_unaffected.jar");
+        std::fs::write(&runtime_file, b"runtime jar").unwrap();
+
+        let jar = ResolvedJar {
+            full_jar_path: "/nonexistent/full.jar".to_string(),
+            compile_jar_path: Some(
+                "/bazel-out/bin/external/maven/foo/_ijar/downloaded-ijar.jar".to_string(),
+            ),
+            runtime_jar_path: Some(runtime_file.to_string_lossy().into_owned()),
+            source_path: None,
+        };
+
+        assert_eq!(
+            jar.effective_path(),
+            runtime_file.to_string_lossy().as_ref(),
+            "effective_path() should prefer runtime_jar even when compile_jar is an ijar"
+        );
+        let _ = std::fs::remove_file(&runtime_file);
+    }
+
+    #[test]
+    fn test_effective_path_skips_ijar_when_runtime_missing() {
+        let jar = ResolvedJar {
+            full_jar_path: "/nonexistent/full.jar".to_string(),
+            compile_jar_path: Some(
+                "/bazel-out/bin/external/maven/foo/_ijar/downloaded-ijar.jar".to_string(),
+            ),
+            runtime_jar_path: Some("/nonexistent/runtime.jar".to_string()),
+            source_path: None,
+        };
+
+        assert_eq!(
+            jar.effective_path(),
+            "/nonexistent/full.jar",
+            "effective_path() should skip ijar compile_jar even when runtime_jar is set but missing"
+        );
+    }
+
+    #[test]
+    fn test_build_resolved_jars_matches_runtime_jar_by_filename() {
+        let java_info = bazel_aspect::JavaIdeInfo::default();
+        let workspace = std::path::PathBuf::from("/workspace");
+        let full_jars = vec!["/bazel-out/bin/external/foo/downloaded.jar".to_string()];
+        let runtime_jars = vec!["/execroot/external/foo/downloaded.jar".to_string()];
+
+        let resolved =
+            build_resolved_jars(&java_info, &full_jars, &[], &runtime_jars, &workspace, "//foo:lib");
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(
+            resolved[0].runtime_jar_path.as_deref(),
+            Some("/execroot/external/foo/downloaded.jar"),
+        );
+    }
+
+    #[test]
+    fn test_build_resolved_jars_duplicate_runtime_filename_gives_none() {
+        let java_info = bazel_aspect::JavaIdeInfo::default();
+        let workspace = std::path::PathBuf::from("/workspace");
+        let full_jars = vec!["/bazel-out/bin/external/foo/classes.jar".to_string()];
+        let runtime_jars = vec![
+            "/execroot/external/foo/classes.jar".to_string(),
+            "/execroot/external/bar/classes.jar".to_string(),
+        ];
+
+        let resolved =
+            build_resolved_jars(&java_info, &full_jars, &[], &runtime_jars, &workspace, "//foo:lib");
+
+        assert_eq!(resolved.len(), 1);
+        assert!(
+            resolved[0].runtime_jar_path.is_none(),
+            "Duplicate runtime filenames should result in None to avoid ambiguity"
         );
     }
 
@@ -1524,7 +1803,7 @@ mod tests {
         let jars = graph.get_target_jars("//lib:utils").unwrap();
         let output_jar = jars
             .iter()
-            .find(|j| j.classpath_path == output_jar_path.to_string_lossy().as_ref())
+            .find(|j| j.full_jar_path == output_jar_path.to_string_lossy().as_ref())
             .expect("Expected output.jar");
         assert_eq!(
             output_jar.source_path.as_deref(),
@@ -1533,7 +1812,7 @@ mod tests {
         );
         let extra_jar = jars
             .iter()
-            .find(|j| j.classpath_path == extra_jar_path.to_string_lossy().as_ref())
+            .find(|j| j.full_jar_path == extra_jar_path.to_string_lossy().as_ref())
             .expect("Expected extra.jar");
         assert_eq!(
             extra_jar.source_path, None,
@@ -1584,7 +1863,7 @@ mod tests {
         let jars = graph.get_target_jars("@maven//:guava").unwrap();
         let jar = jars
             .iter()
-            .find(|j| j.classpath_path == bin_path)
+            .find(|j| j.full_jar_path == bin_path)
             .expect("Expected compile_jar entry");
         assert_eq!(
             jar.source_path,
@@ -1603,7 +1882,9 @@ mod tests {
         graph.set_target_jars(
             canonical,
             vec![ResolvedJar {
-                classpath_path: "/guava.jar".to_string(),
+                full_jar_path: "/guava.jar".to_string(),
+                compile_jar_path: None,
+                runtime_jar_path: None,
                 source_path: Some("/guava-sources.jar".to_string()),
             }],
         );
@@ -1752,7 +2033,7 @@ mod tests {
             "JAR data should be preserved after deps-only change"
         );
         assert_eq!(
-            graph.get_target_jars("//foo:lib").unwrap()[0].classpath_path,
+            graph.get_target_jars("//foo:lib").unwrap()[0].full_jar_path,
             "/foo.jar"
         );
 
@@ -1801,7 +2082,9 @@ mod tests {
         graph.set_target_jars(
             "//foo:old",
             vec![ResolvedJar {
-                classpath_path: "/old.jar".to_string(),
+                full_jar_path: "/old.jar".to_string(),
+                compile_jar_path: None,
+                runtime_jar_path: None,
                 source_path: None,
             }],
         );
@@ -2106,10 +2389,10 @@ mod tests {
         assert_eq!(jars.len(), 1);
         assert!(
             jars[0]
-                .classpath_path
+                .full_jar_path
                 .contains("/execroot/external/org_example/jar/downloaded.jar"),
             "Expected JAR resolved to execroot, got: {}",
-            jars[0].classpath_path
+            jars[0].full_jar_path
         );
     }
 
@@ -2145,7 +2428,7 @@ mod tests {
         let jars = graph.get_target_jars("//lib:foo").unwrap();
         assert_eq!(jars.len(), 1);
         assert_eq!(
-            jars[0].classpath_path, jar_path,
+            jars[0].full_jar_path, jar_path,
             "Non-external JAR path should remain unchanged"
         );
     }
@@ -2186,7 +2469,7 @@ mod tests {
         let jars = graph.get_target_jars("//app:app").unwrap();
         assert_eq!(jars.len(), 1);
         assert_eq!(
-            jars[0].classpath_path, stale_path,
+            jars[0].full_jar_path, stale_path,
             "Original path should be preserved when resolve_external_path returns None"
         );
     }
@@ -2234,15 +2517,15 @@ mod tests {
         let jars = graph.get_target_jars("//app:app").unwrap();
         assert_eq!(jars.len(), 1);
         assert_eq!(
-            jars[0].classpath_path, derived_path,
+            jars[0].full_jar_path, derived_path,
             "Derived artifact path should be preserved without resolve_external_path mangling"
         );
         assert!(
             jars[0]
-                .classpath_path
+                .full_jar_path
                 .contains("bazel-out/k8-fastbuild/bin/external/maven"),
             "bazel-out/<config>/bin/ prefix must be retained, got: {}",
-            jars[0].classpath_path
+            jars[0].full_jar_path
         );
     }
 
@@ -2300,7 +2583,7 @@ mod tests {
         let jars = graph.get_target_jars("//app:app").unwrap();
         let jar = jars
             .iter()
-            .find(|j| j.classpath_path == bin_path)
+            .find(|j| j.full_jar_path == bin_path)
             .expect("Expected bin jar");
         let resolved_src = jar.source_path.as_ref().unwrap();
         assert_eq!(
@@ -2427,7 +2710,8 @@ mod tests {
         };
 
         let classpath_jars = vec![classpath_jar.to_string_lossy().into_owned()];
-        let resolved = build_resolved_jars(&java_info, &classpath_jars, &workspace, "//lib:lib");
+        let resolved =
+            build_resolved_jars(&java_info, &classpath_jars, &[], &[], &workspace, "//lib:lib");
 
         assert_eq!(resolved.len(), 1);
         assert!(
@@ -2467,7 +2751,8 @@ mod tests {
         };
 
         let classpath_jars = vec![classpath_jar.to_string_lossy().into_owned()];
-        let resolved = build_resolved_jars(&java_info, &classpath_jars, &workspace, "//lib:lib");
+        let resolved =
+            build_resolved_jars(&java_info, &classpath_jars, &[], &[], &workspace, "//lib:lib");
 
         assert_eq!(resolved.len(), 1);
         assert_eq!(
@@ -2505,7 +2790,8 @@ mod tests {
         };
 
         let classpath_jars = vec![classpath_jar.to_string_lossy().into_owned()];
-        let resolved = build_resolved_jars(&java_info, &classpath_jars, &workspace, "//lib:lib");
+        let resolved =
+            build_resolved_jars(&java_info, &classpath_jars, &[], &[], &workspace, "//lib:lib");
 
         assert_eq!(resolved.len(), 1);
         assert!(
@@ -2581,8 +2867,14 @@ mod tests {
 
         std::env::set_var("HOME", tmp.path());
         let classpath_jars = vec![classpath_jar_path.to_string_lossy().into_owned()];
-        let resolved =
-            build_resolved_jars(&java_info, &classpath_jars, &workspace, "@maven//:guava");
+        let resolved = build_resolved_jars(
+            &java_info,
+            &classpath_jars,
+            &[],
+            &[],
+            &workspace,
+            "@maven//:guava",
+        );
 
         assert_eq!(resolved.len(), 1);
         assert_eq!(
@@ -2623,7 +2915,8 @@ mod tests {
 
         std::env::set_var("HOME", tmp.path());
         let classpath_jars = vec![classpath_jar.to_string_lossy().into_owned()];
-        let resolved = build_resolved_jars(&java_info, &classpath_jars, &workspace, "//lib:lib");
+        let resolved =
+            build_resolved_jars(&java_info, &classpath_jars, &[], &[], &workspace, "//lib:lib");
 
         assert_eq!(resolved.len(), 1);
         assert!(
@@ -2661,8 +2954,14 @@ mod tests {
 
         std::env::set_var("HOME", tmp.path());
         let classpath_jars = vec![classpath_jar.to_string_lossy().into_owned()];
-        let resolved =
-            build_resolved_jars(&java_info, &classpath_jars, &workspace, "@maven//:guava");
+        let resolved = build_resolved_jars(
+            &java_info,
+            &classpath_jars,
+            &[],
+            &[],
+            &workspace,
+            "@maven//:guava",
+        );
 
         assert_eq!(resolved.len(), 1);
         assert_eq!(
@@ -2794,5 +3093,95 @@ mod tests {
         assert_eq!(graph.get_target_kind("//foo:lib"), TargetKind::JavaLibrary);
         graph.clear();
         assert_eq!(graph.get_target_kind("//foo:lib"), TargetKind::Unknown);
+    }
+
+    #[test]
+    fn test_normalize_artifact_path_resolves_external_when_not_source() {
+        let artifact = ArtifactLocation {
+            relative_path: Some("external/maven/v1/com/amazonaws/aws-java-sdk-core/1.12.261/aws-java-sdk-core-1.12.261.jar".to_string()),
+            is_source: false,
+            is_external: true,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let result = normalize_artifact_path(&artifact, tmp.path());
+        assert!(result.is_some());
+        let path = result.unwrap();
+        assert!(
+            path != "external/maven/v1/com/amazonaws/aws-java-sdk-core/1.12.261/aws-java-sdk-core-1.12.261.jar"
+                || !tmp.path().join("bazel-out").exists(),
+            "When bazel-out exists, external path should be resolved; got: {}",
+            path
+        );
+    }
+
+    #[test]
+    fn test_normalize_artifact_path_absolutizes_bazel_out_paths() {
+        let artifact = ArtifactLocation {
+            relative_path: Some("bazel-out/k8-fastbuild/bin/app/libapp.jar".to_string()),
+            is_source: false,
+            is_external: false,
+            ..Default::default()
+        };
+        let result = normalize_artifact_path(&artifact, Path::new("/workspace"));
+        assert_eq!(
+            result,
+            Some("/workspace/bazel-out/k8-fastbuild/bin/app/libapp.jar".to_string()),
+            "bazel-out/ paths should be absolutized with workspace_root"
+        );
+    }
+
+    #[test]
+    fn test_populate_from_aspects_resolves_external_full_jar_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path();
+
+        let external_jar = "external/maven/v1/com/example/lib/1.0/lib-1.0.jar";
+        let compile_jar =
+            "bazel-out/k8-fastbuild/bin/external/maven/v1/com/example/lib/1.0/header-lib-1.0.jar";
+
+        let target = TargetIdeInfo {
+            label: "//app:app".to_string(),
+            kind: "java_library".to_string(),
+            build_file: None,
+            java_info: Some(JavaIdeInfo {
+                jars: vec![JarInfo {
+                    jar: ArtifactLocation {
+                        relative_path: Some(external_jar.to_string()),
+                        is_source: false,
+                        is_external: true,
+                        ..Default::default()
+                    },
+                    interface_jar: Some(ArtifactLocation {
+                        relative_path: Some(compile_jar.to_string()),
+                        is_source: false,
+                        is_external: false,
+                        ..Default::default()
+                    }),
+                    source_jar: None,
+                }],
+                ..Default::default()
+            }),
+            deps: vec![],
+            runtime_deps: vec![],
+            exports: vec![],
+        };
+
+        let mut graph = DependencyGraph::new();
+        graph.populate_from_aspects(&[target], workspace);
+
+        let jars = graph
+            .get_target_jars("//app:app")
+            .expect("should have jars for //app:app");
+        assert!(
+            !jars.is_empty(),
+            "Should have at least one jar for //app:app"
+        );
+        let jar = &jars[0];
+        assert!(
+            jar.full_jar_path != external_jar || !workspace.join("bazel-out").exists(),
+            "External full_jar_path should be resolved when bazel-out symlink exists; got: {}",
+            jar.full_jar_path
+        );
     }
 }

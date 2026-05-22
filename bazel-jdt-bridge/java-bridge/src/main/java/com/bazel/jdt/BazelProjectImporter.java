@@ -81,9 +81,8 @@ public class BazelProjectImporter extends AbstractProjectImporter {
                 "Scoped import with " + patterns.size() + " patterns from .bazelproject"));
         }
 
-        String[] buildFlags = null;
-        if (projectView != null && !projectView.getBuildFlags().isEmpty()) {
-            buildFlags = projectView.getBuildFlags().toArray(new String[0]);
+        if (projectView != null) {
+            bridge.setProjectView(projectView);
         }
 
         LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
@@ -136,7 +135,7 @@ public class BazelProjectImporter extends AbstractProjectImporter {
             long phaseStart = System.currentTimeMillis();
             LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
                 "Phase 3/3: running aspect build for " + targets.length + " targets..."));
-            finalTargets = bridge.runAspectBuild(targets, buildFlags);
+            finalTargets = bridge.runAspectBuild(targets, bridge.getBuildFlags());
             long phaseElapsed = (System.currentTimeMillis() - phaseStart) / 1000;
 
             String aspectStats = bridge.getAspectBuildStats();
@@ -256,11 +255,10 @@ public class BazelProjectImporter extends AbstractProjectImporter {
         String bazelPath = config[1];
         String cacheDir = config[2];
 
-        if (rootFolder != null) {
-            BazelProjectView projectView = BazelProjectView.parse(rootFolder);
-            if (projectView != null && !projectView.getBazelBinary().isEmpty()) {
-                bazelPath = projectView.getBazelBinary();
-            }
+        BazelProjectView projectView = rootFolder != null
+            ? BazelProjectView.parse(rootFolder) : null;
+        if (projectView != null && !projectView.getBazelBinary().isEmpty()) {
+            bazelPath = projectView.getBazelBinary();
         }
 
         long startTime = System.currentTimeMillis();
@@ -270,14 +268,15 @@ public class BazelProjectImporter extends AbstractProjectImporter {
         BazelBridge bridge = BazelBridge.getInstance();
         bridge.initialize(workspacePath, bazelPath, cacheDir);
 
+        if (projectView != null) {
+            bridge.setProjectView(projectView);
+        }
+
         ensureBazelProjectsGitignore(workspacePath);
 
-        if (rootFolder != null) {
-            BazelProjectView projectView = BazelProjectView.parse(rootFolder);
-            if (projectView != null && !projectView.getDirectories().isEmpty()) {
-                String[] watchDirs = projectView.getDirectories().toArray(new String[0]);
-                bridge.updateWatchPaths(watchDirs);
-            }
+        if (projectView != null && !projectView.getDirectories().isEmpty()) {
+            String[] watchDirs = projectView.getDirectories().toArray(new String[0]);
+            bridge.updateWatchPaths(watchDirs);
         }
 
         final String wsPath = workspacePath;

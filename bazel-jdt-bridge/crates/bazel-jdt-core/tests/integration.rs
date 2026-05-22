@@ -66,21 +66,27 @@ fn dependency_chain_classpath() {
     graph.set_target_jars(
         "//utils:utils",
         vec![ResolvedJar {
-            classpath_path: "utils.jar".to_string(),
+            full_jar_path: "utils.jar".to_string(),
+            compile_jar_path: None,
+            runtime_jar_path: None,
             source_path: None,
         }],
     );
     graph.set_target_jars(
         "//service:service",
         vec![ResolvedJar {
-            classpath_path: "service.jar".to_string(),
+            full_jar_path: "service.jar".to_string(),
+            compile_jar_path: None,
+            runtime_jar_path: None,
             source_path: None,
         }],
     );
     graph.set_target_jars(
         "//app:app",
         vec![ResolvedJar {
-            classpath_path: "app.jar".to_string(),
+            full_jar_path: "app.jar".to_string(),
+            compile_jar_path: None,
+            runtime_jar_path: None,
             source_path: None,
         }],
     );
@@ -192,14 +198,18 @@ fn pipe_delimited_classpath_output() {
     graph.set_target_jars(
         "//lib:lib",
         vec![ResolvedJar {
-            classpath_path: "lib.jar".to_string(),
+            full_jar_path: "lib.jar".to_string(),
+            compile_jar_path: None,
+            runtime_jar_path: None,
             source_path: None,
         }],
     );
     graph.set_target_jars(
         "//app:app",
         vec![ResolvedJar {
-            classpath_path: "app.jar".to_string(),
+            full_jar_path: "app.jar".to_string(),
+            compile_jar_path: None,
+            runtime_jar_path: None,
             source_path: None,
         }],
     );

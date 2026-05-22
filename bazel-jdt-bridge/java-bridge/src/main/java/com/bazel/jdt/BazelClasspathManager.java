@@ -24,6 +24,10 @@ public class BazelClasspathManager {
     private static final int BATCH_SIZE = 50;
 
     public static void setMergedClasspathContainer(IProject project) {
+        setMergedClasspathContainer(project, false);
+    }
+
+    public static void setMergedClasspathContainer(IProject project, boolean force) {
         try {
             BazelBridge bridge = BazelBridge.getInstance();
             if (!bridge.isInitialized()) {
@@ -46,11 +50,13 @@ public class BazelClasspathManager {
             String[] labels = targetLabels.toArray(new String[0]);
             String[] rawEntries = bridge.computeClasspathMerged(labels);
 
-            String[] cachedEntries = TargetProjectMapping.readCachedClasspath(project, targetLabels.get(0));
-            if (cachedEntries != null && Arrays.equals(rawEntries, cachedEntries)) {
-                LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
-                    "Classpath unchanged for project " + project.getName() + ", skipping container update"));
-                return;
+            if (!force) {
+                String[] cachedEntries = TargetProjectMapping.readCachedClasspath(project, targetLabels.get(0));
+                if (cachedEntries != null && Arrays.equals(rawEntries, cachedEntries)) {
+                    LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                        "Classpath unchanged for project " + project.getName() + ", skipping container update"));
+                    return;
+                }
             }
 
             BazelClasspathContainer container = new BazelClasspathContainer(

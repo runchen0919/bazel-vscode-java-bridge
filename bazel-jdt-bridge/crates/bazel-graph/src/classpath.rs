@@ -84,9 +84,13 @@ impl ComputedClasspath {
             TargetKind::JavaLibrary
             | TargetKind::JavaBinary
             | TargetKind::JavaTest
-            | TargetKind::Unknown => {
-                Self::compute_for_library(graph, target_label, is_test, workspace_root, &target_kind)
-            }
+            | TargetKind::Unknown => Self::compute_for_library(
+                graph,
+                target_label,
+                is_test,
+                workspace_root,
+                &target_kind,
+            ),
         }
     }
 
@@ -221,7 +225,7 @@ impl ComputedClasspath {
                             })
                     };
 
-                    if let Some(&existing_idx) = seen_jars.get(&jar.classpath_path) {
+                    if let Some(&existing_idx) = seen_jars.get(jar.effective_path()) {
                         if entries[existing_idx].source_attachment_path.is_none() {
                             let source = resolve_source(jar);
                             if source.is_some() {
@@ -230,10 +234,10 @@ impl ComputedClasspath {
                         }
                     } else {
                         let source = resolve_source(jar);
-                        seen_jars.insert(jar.classpath_path.clone(), entries.len());
+                        seen_jars.insert(jar.effective_path().to_string(), entries.len());
                         entries.push(ClasspathEntry {
                             entry_type: ClasspathEntryType::Library,
-                            path: jar.classpath_path.clone(),
+                            path: jar.effective_path().to_string(),
                             source_attachment_path: source,
                             is_test: dep_is_testonly,
                             is_exported: false,
@@ -247,7 +251,11 @@ impl ComputedClasspath {
 
         let mut output_jars: Vec<String> = graph
             .get_target_jars(target_label)
-            .map(|jars| jars.iter().map(|j| j.classpath_path.clone()).collect())
+            .map(|jars| {
+                jars.iter()
+                    .map(|j| j.effective_path().to_string())
+                    .collect()
+            })
             .unwrap_or_default();
 
         if *target_kind == TargetKind::JavaBinary {
@@ -257,19 +265,17 @@ impl ComputedClasspath {
                 }
                 if let Some(dep_jars) = graph.get_target_jars(dep_label) {
                     for jar in dep_jars {
-                        if !output_jars.contains(&jar.classpath_path) {
-                            output_jars.push(jar.classpath_path.clone());
+                        if !output_jars.iter().any(|p| p == jar.effective_path()) {
+                            output_jars.push(jar.effective_path().to_string());
                         }
                     }
                 }
             }
 
             if output_jars.len() > 1 {
-                output_jars.retain(|jar_path| {
-                    match std::fs::metadata(jar_path) {
-                        Ok(meta) => meta.len() >= 1024,
-                        Err(_) => true,
-                    }
+                output_jars.retain(|jar_path| match std::fs::metadata(jar_path) {
+                    Ok(meta) => meta.len() >= 1024,
+                    Err(_) => true,
                 });
             }
         }
@@ -302,7 +308,7 @@ impl ComputedClasspath {
                     .cloned();
                 entries.push(ClasspathEntry {
                     entry_type: ClasspathEntryType::Library,
-                    path: jar.classpath_path.clone(),
+                    path: jar.effective_path().to_string(),
                     source_attachment_path: source,
                     is_test: false,
                     is_exported: false,
@@ -314,7 +320,11 @@ impl ComputedClasspath {
 
         let output_jars = graph
             .get_target_jars(target_label)
-            .map(|jars| jars.iter().map(|j| j.classpath_path.clone()).collect())
+            .map(|jars| {
+                jars.iter()
+                    .map(|j| j.effective_path().to_string())
+                    .collect()
+            })
             .unwrap_or_default();
 
         Ok(ComputedClasspath {
@@ -965,7 +975,9 @@ mod tests {
         graph.set_target_jars(
             "@@rules_jvm_external~maven~maven//:guava",
             vec![ResolvedJar {
-                classpath_path: "/guava.jar".to_string(),
+                full_jar_path: "/guava.jar".to_string(),
+                compile_jar_path: None,
+                runtime_jar_path: None,
                 source_path: None,
             }],
         );
@@ -976,7 +988,7 @@ mod tests {
 
         let jars = graph.get_target_jars("@maven//:guava");
         assert!(jars.is_some());
-        assert_eq!(jars.unwrap()[0].classpath_path, "/guava.jar");
+        assert_eq!(jars.unwrap()[0].full_jar_path, "/guava.jar");
     }
 
     #[test]
@@ -991,7 +1003,9 @@ mod tests {
         graph.set_target_jars(
             "@@rules_jvm_external~maven~maven//:com_google_guava_guava",
             vec![ResolvedJar {
-                classpath_path: "/guava-33.4.0-jre.jar".to_string(),
+                full_jar_path: "/guava-33.4.0-jre.jar".to_string(),
+                compile_jar_path: None,
+                runtime_jar_path: None,
                 source_path: None,
             }],
         );
@@ -1844,9 +1858,8 @@ mod tests {
         ];
 
         graph.populate_from_aspects(&results, Path::new("/workspace"));
-        let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaBinary, None)
-                .unwrap();
+        let cp = ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaBinary, None)
+            .unwrap();
 
         assert!(
             cp.output_jars
@@ -1877,9 +1890,8 @@ mod tests {
         ];
 
         graph.populate_from_aspects(&results, Path::new("/workspace"));
-        let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaBinary, None)
-                .unwrap();
+        let cp = ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaBinary, None)
+            .unwrap();
 
         assert!(
             cp.output_jars
@@ -1916,9 +1928,8 @@ mod tests {
         ];
 
         graph.populate_from_aspects(&results, Path::new("/workspace"));
-        let cp =
-            ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaBinary, None)
-                .unwrap();
+        let cp = ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaBinary, None)
+            .unwrap();
 
         let lines = cp.to_pipe_delimited_entries();
         let lib_count = lines
@@ -1953,9 +1964,8 @@ mod tests {
         ];
 
         graph.populate_from_aspects(&results, Path::new("/workspace"));
-        let cp =
-            ComputedClasspath::compute_for(&graph, "//lib:lib", TargetKind::JavaLibrary, None)
-                .unwrap();
+        let cp = ComputedClasspath::compute_for(&graph, "//lib:lib", TargetKind::JavaLibrary, None)
+            .unwrap();
 
         assert_eq!(
             cp.output_jars,

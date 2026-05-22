@@ -62,13 +62,9 @@ public class BazelCommandHandler implements IDelegateCommandHandler {
                 }
             }
 
-            String[] buildFlags = null;
-            if (arguments.size() > 4 && arguments.get(4) instanceof List) {
-                @SuppressWarnings("unchecked")
-                List<String> flags = (List<String>) arguments.get(4);
-                if (!flags.isEmpty()) {
-                    buildFlags = flags.toArray(new String[0]);
-                }
+            BazelProjectView projectView = BazelProjectView.parse(new java.io.File(workspacePath));
+            if (projectView != null) {
+                bridge.setProjectView(projectView);
             }
 
             if (arguments.size() > 5 && arguments.get(5) instanceof String) {
@@ -92,7 +88,7 @@ public class BazelCommandHandler implements IDelegateCommandHandler {
                     "Sync mode set to: " + syncMode));
             }
 
-            String[] targets = bridge.discoverTargets(scopePatterns, buildFlags);
+            String[] targets = bridge.discoverTargets(scopePatterns, bridge.getBuildFlags());
             BazelClasspathManager.refreshClasspath();
             return null;
         } catch (Exception e) {
@@ -198,13 +194,21 @@ public class BazelCommandHandler implements IDelegateCommandHandler {
             LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
                 "Pre-debug build for " + projectName + ": " + targets));
 
-            bridge.buildTargets(targets.toArray(new String[0]), null);
+            boolean buildSuccess = bridge.buildTargets(
+                targets.toArray(new String[0]), bridge.getBuildFlags());
+            if (!buildSuccess) {
+                String msg = "Bazel build failed for targets: " + targets
+                    + " (project: " + projectName + ")";
+                LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt", msg));
+                throw new RuntimeException(msg);
+            }
 
             LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
                 "Pre-debug build complete for " + projectName));
 
             BazelRuntimeClasspathEntryResolver.clearCache();
-            BazelClasspathManager.setMergedClasspathContainer(project);
+            BazelClasspathContainer.resetWarnings();
+            BazelClasspathManager.setMergedClasspathContainer(project, true);
 
             return null;
         } catch (Exception e) {

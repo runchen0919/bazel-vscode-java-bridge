@@ -1050,4 +1050,55 @@ deps {
             Some("bazel-out/bin/foo/bar-src.jar")
         );
     }
+
+    #[test]
+    fn test_parse_absolute_path_in_artifact_location() {
+        let input = r#"
+            label: "//app:app"
+            kind_string: "java_library"
+            java_ide_info {
+                jars {
+                    jar {
+                        relative_path: "lib.jar"
+                        root_path: "external/maven/v1"
+                        absolute_path: "external/maven/v1/lib.jar"
+                        is_source: false
+                        is_external: true
+                    }
+                }
+            }
+"#;
+        let result = parse_text_proto(input);
+        let jar_loc = &result.value.java_info.as_ref().unwrap().jars[0].jar;
+        assert_eq!(
+            jar_loc.absolute_path.as_deref(),
+            Some("external/maven/v1/lib.jar")
+        );
+        assert_eq!(jar_loc.relative_path.as_deref(), Some("lib.jar"));
+        assert_eq!(jar_loc.root_path.as_deref(), Some("external/maven/v1"));
+    }
+
+    #[test]
+    fn test_parse_legacy_no_absolute_path() {
+        let input = r#"
+            label: "//app:app"
+            kind_string: "java_library"
+            java_ide_info {
+                jars {
+                    jar {
+                        relative_path: "lib.jar"
+                        root_path: "external/maven/v1"
+                        is_source: false
+                    }
+                }
+            }
+"#;
+        let result = parse_text_proto(input);
+        let jar_loc = &result.value.java_info.as_ref().unwrap().jars[0].jar;
+        assert!(
+            jar_loc.absolute_path.is_none(),
+            "Legacy output without absolute_path should parse as None"
+        );
+        assert_eq!(jar_loc.relative_path.as_deref(), Some("lib.jar"));
+    }
 }

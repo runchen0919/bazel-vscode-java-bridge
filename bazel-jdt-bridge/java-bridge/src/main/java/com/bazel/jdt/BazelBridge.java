@@ -18,6 +18,7 @@ public final class BazelBridge {
     private volatile String dependencySourceLoadingMode = "full-project";
     private volatile String syncMode = "fast";
     private volatile String[] cachedDependencyPackages = new String[0];
+    private volatile BazelProjectView projectView;
 
     private static ExecutorService createExecutor() {
         return Executors.newSingleThreadExecutor(r -> {
@@ -57,6 +58,7 @@ public final class BazelBridge {
             lastWorkspacePath = workspacePath;
             lastBazelPath = bazelPath;
             lastCacheDir = cacheDir;
+            projectView = null;
         } finally {
             rwLock.writeLock().unlock();
         }
@@ -249,6 +251,22 @@ public final class BazelBridge {
 
     public String[] getCachedDependencyPackages() {
         return this.cachedDependencyPackages;
+    }
+
+    public void setProjectView(BazelProjectView view) {
+        this.projectView = view;
+    }
+
+    public BazelProjectView getProjectView() {
+        return this.projectView;
+    }
+
+    public String[] getBuildFlags() {
+        BazelProjectView view = this.projectView;
+        if (view == null || view.getBuildFlags().isEmpty()) {
+            return null;
+        }
+        return view.getBuildFlags().toArray(new String[0]);
     }
 
     public void cleanCache() {

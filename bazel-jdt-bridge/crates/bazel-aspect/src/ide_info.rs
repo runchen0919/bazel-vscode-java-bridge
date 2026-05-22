@@ -159,4 +159,45 @@ mod tests {
     fn test_platforms_returns_none() {
         assert_eq!(canonical_to_apparent_label("@@platforms//cpu:cpu"), None);
     }
+
+    use super::ArtifactLocation;
+
+    #[test]
+    fn test_best_path_prefers_absolute_path() {
+        let loc = ArtifactLocation {
+            absolute_path: Some("/execroot/ws/external/maven/v1/lib.jar".to_string()),
+            root_path: Some("external/maven/v1".to_string()),
+            relative_path: Some("lib.jar".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            loc.best_path(),
+            Some("/execroot/ws/external/maven/v1/lib.jar".to_string())
+        );
+    }
+
+    #[test]
+    fn test_best_path_falls_back_to_root_plus_relative() {
+        let loc = ArtifactLocation {
+            absolute_path: None,
+            root_path: Some("bazel-out/k8-fastbuild/bin".to_string()),
+            relative_path: Some("app/libapp.jar".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            loc.best_path(),
+            Some("bazel-out/k8-fastbuild/bin/app/libapp.jar".to_string())
+        );
+    }
+
+    #[test]
+    fn test_best_path_relative_only() {
+        let loc = ArtifactLocation {
+            absolute_path: None,
+            root_path: None,
+            relative_path: Some("src/Main.java".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(loc.best_path(), Some("src/Main.java".to_string()));
+    }
 }

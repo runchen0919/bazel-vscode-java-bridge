@@ -4,6 +4,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.eclipse.core.resources.IProject;
+import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.ILog;
 import org.eclipse.core.runtime.IStatus;
@@ -76,22 +78,60 @@ public class BazelRuntimeClasspathEntryResolver implements IRuntimeClasspathEntr
             }
 
             List<IRuntimeClasspathEntry> result = new ArrayList<>();
+            int libraryCount = 0;
+            int projectCount = 0;
+            int sourceCount = 0;
+
             for (IClasspathEntry cpEntry : container.getClasspathEntries()) {
-                if (cpEntry.getEntryKind() != IClasspathEntry.CPE_LIBRARY) {
-                    continue;
+                switch (cpEntry.getEntryKind()) {
+                    case IClasspathEntry.CPE_LIBRARY:
+                        libraryCount++;
+                        IRuntimeClasspathEntry archiveEntry =
+                            JavaRuntime.newArchiveRuntimeClasspathEntry(cpEntry.getPath());
+                        if (cpEntry.getSourceAttachmentPath() != null) {
+                            archiveEntry.setSourceAttachmentPath(cpEntry.getSourceAttachmentPath());
+                        }
+                        if (cpEntry.getSourceAttachmentRootPath() != null) {
+                            archiveEntry.setSourceAttachmentRootPath(
+                                cpEntry.getSourceAttachmentRootPath());
+                        }
+                        result.add(archiveEntry);
+                        break;
+
+                    case IClasspathEntry.CPE_PROJECT:
+                        projectCount++;
+                        IProject depProject =
+                            ResourcesPlugin.getWorkspace().getRoot().getProject(
+                                cpEntry.getPath().segment(0));
+                        IJavaProject depJavaProject = JavaCore.create(depProject);
+                        if (depJavaProject != null && depJavaProject.exists()) {
+                            result.add(
+                                JavaRuntime.newProjectRuntimeClasspathEntry(depJavaProject));
+                        }
+                        break;
+
+                    case IClasspathEntry.CPE_SOURCE:
+                        sourceCount++;
+                        IProject srcProject =
+                            ResourcesPlugin.getWorkspace().getRoot().getProject(
+                                cpEntry.getPath().segment(0));
+                        IJavaProject srcJavaProject = JavaCore.create(srcProject);
+                        if (srcJavaProject != null && srcJavaProject.exists()) {
+                            result.add(
+                                JavaRuntime.newProjectRuntimeClasspathEntry(srcJavaProject));
+                        }
+                        break;
+
+                    default:
+                        break;
                 }
-                IRuntimeClasspathEntry rte = JavaRuntime.newArchiveRuntimeClasspathEntry(cpEntry.getPath());
-                if (cpEntry.getSourceAttachmentPath() != null) {
-                    rte.setSourceAttachmentPath(cpEntry.getSourceAttachmentPath());
-                }
-                if (cpEntry.getSourceAttachmentRootPath() != null) {
-                    rte.setSourceAttachmentRootPath(cpEntry.getSourceAttachmentRootPath());
-                }
-                result.add(rte);
             }
 
             LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
-                "Resolved " + result.size() + " runtime classpath entries for " + project.getElementName()));
+                "Resolved " + result.size() + " runtime classpath entries for "
+                + project.getElementName()
+                + " (library=" + libraryCount + ", project=" + projectCount
+                + ", source=" + sourceCount + ")"));
             return result.toArray(EMPTY);
         } catch (Exception e) {
             LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",

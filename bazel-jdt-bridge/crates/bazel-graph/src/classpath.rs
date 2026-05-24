@@ -1978,4 +1978,98 @@ mod tests {
             "java_library output_jars should NOT contain dep jars"
         );
     }
+
+    #[test]
+    fn test_processed_jar_skipped_in_favor_of_runtime_jar() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let jar_dir = workspace.join("external/maven/guava/33.4.0-jre");
+        std::fs::create_dir_all(&jar_dir).unwrap();
+
+        let processed_jar = jar_dir.join("processed_guava-33.4.0-jre.jar");
+        let full_jar = jar_dir.join("guava-33.4.0-jre.jar");
+        let source_jar = jar_dir.join("guava-33.4.0-jre-sources.jar");
+        std::fs::write(&processed_jar, [0u8; 2048]).unwrap();
+        std::fs::write(&full_jar, [0u8; 2048]).unwrap();
+        std::fs::write(&source_jar, [0u8; 2048]).unwrap();
+
+        let processed_path = processed_jar.to_string_lossy().into_owned();
+        let full_path = full_jar.to_string_lossy().into_owned();
+        let source_path = source_jar.to_string_lossy().into_owned();
+
+        let mut graph = DependencyGraph::new();
+        let results = vec![
+            TargetIdeInfo {
+                label: "//app:app".to_string(),
+                kind: "java_library".to_string(),
+                build_file: None,
+                java_info: Some(JavaIdeInfo {
+                    jars: vec![JarInfo {
+                        jar: ArtifactLocation {
+                            absolute_path: Some("/workspace/app.jar".to_string()),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                deps: vec!["@maven//:guava".to_string()],
+                runtime_deps: Vec::new(),
+                exports: Vec::new(),
+            },
+            TargetIdeInfo {
+                label: "@maven//:guava".to_string(),
+                kind: "java_import".to_string(),
+                build_file: None,
+                java_info: Some(JavaIdeInfo {
+                    jars: vec![],
+                    compile_jars: vec![ArtifactLocation {
+                        absolute_path: Some(processed_path.clone()),
+                        ..Default::default()
+                    }],
+                    runtime_jars: vec![ArtifactLocation {
+                        absolute_path: Some(full_path.clone()),
+                        ..Default::default()
+                    }],
+                    source_jars: vec![ArtifactLocation {
+                        absolute_path: Some(source_path.clone()),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                deps: vec![],
+                runtime_deps: Vec::new(),
+                exports: Vec::new(),
+            },
+        ];
+
+        graph.populate_from_aspects(&results, &workspace);
+
+        let cp = ComputedClasspath::compute_for(&graph, "//app:app", TargetKind::JavaLibrary, None)
+            .unwrap();
+
+        let guava_entry = cp
+            .entries
+            .iter()
+            .find(|e| e.entry_type == ClasspathEntryType::Library && (e.path.contains("guava")));
+
+        assert!(guava_entry.is_some(), "Expected LIB entry for guava");
+
+        let entry = guava_entry.unwrap();
+        assert!(
+            !entry.path.contains("processed_"),
+            "LIB entry should reference the real JAR, not processed_ header JAR. Got: {}",
+            entry.path
+        );
+        assert!(
+            entry.path.contains("guava-33.4.0-jre.jar"),
+            "LIB entry should reference the full/runtime JAR. Got: {}",
+            entry.path
+        );
+        assert_eq!(
+            entry.source_attachment_path.as_deref(),
+            Some(source_path.as_str()),
+            "Source attachment should point to the sources JAR"
+        );
+    }
 }

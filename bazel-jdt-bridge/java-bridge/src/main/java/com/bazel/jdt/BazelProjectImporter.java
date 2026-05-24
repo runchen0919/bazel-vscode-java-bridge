@@ -272,6 +272,10 @@ public class BazelProjectImporter extends AbstractProjectImporter {
             bridge.setProjectView(projectView);
         }
 
+        LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+            "Fast reload: populating dependency graph from BUILD files"));
+        bridge.populateGraph();
+
         ensureBazelProjectsGitignore(workspacePath);
 
         if (projectView != null && !projectView.getDirectories().isEmpty()) {

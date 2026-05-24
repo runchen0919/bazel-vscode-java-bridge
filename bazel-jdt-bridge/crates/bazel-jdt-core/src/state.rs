@@ -37,6 +37,8 @@ pub struct BazelJdtState {
     pub watcher_join_handle: Mutex<Option<std::thread::JoinHandle<()>>>,
     pub shutdown_flag: AtomicBool,
     pub pending_changes: Mutex<Vec<String>>,
+    /// Whether the dependency graph has been populated from BUILD files
+    pub graph_populated: AtomicBool,
     /// Timeout for `bazel query` operations (default: 120s)
     pub query_timeout: Duration,
     /// Timeout for `bazel build --aspects` operations (default: 300s)
@@ -90,6 +92,7 @@ impl BazelJdtState {
             watcher_join_handle: Mutex::new(None),
             shutdown_flag: AtomicBool::new(false),
             pending_changes: Mutex::new(Vec::new()),
+            graph_populated: AtomicBool::new(false),
             query_timeout: Duration::from_secs(120),
             aspect_timeout: Duration::from_secs(300),
             shutdown_tx,
@@ -109,6 +112,10 @@ impl BazelJdtState {
 
     pub fn is_shutdown(&self) -> bool {
         self.shutdown_flag.load(Ordering::Acquire)
+    }
+
+    pub fn is_graph_populated(&self) -> bool {
+        self.graph_populated.load(Ordering::Acquire)
     }
 
     pub fn set_sync_state(&self, state: SyncState) {
@@ -137,6 +144,7 @@ impl BazelJdtState {
         let count = parsed.len();
         let mut graph = self.graph.lock().unwrap_or_else(|e| e.into_inner());
         graph.populate_from_parsed_batch(&parsed, &self.workspace_root);
+        self.graph_populated.store(true, Ordering::Release);
         Ok(count)
     }
 
@@ -309,5 +317,60 @@ impl BazelJdtState {
         self.invoker
             .resolve_full_classpath_sync(targets, None, false)
             .map_err(|e| format!("Aspect build failed: {}", e))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn test_new_state_graph_not_populated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = BazelJdtState::new(
+            tmp.path().to_path_buf(),
+            "bazel",
+            tmp.path().join("cache").as_path(),
+        )
+        .unwrap();
+        assert!(!state.is_graph_populated());
+        assert!(!state.graph_populated.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_populate_sets_flag_on_success() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let state = BazelJdtState::new(
+            workspace.clone(),
+            "bazel",
+            tmp.path().join("cache").as_path(),
+        )
+        .unwrap();
+
+        assert!(!state.is_graph_populated());
+
+        let result = state.populate_graph_from_build_files();
+        assert!(result.is_ok());
+        assert!(state.is_graph_populated());
+    }
+
+    #[test]
+    fn test_populate_graph_from_empty_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nonexistent = tmp.path().join("nonexistent_ws");
+
+        let state =
+            BazelJdtState::new(nonexistent, "bazel", tmp.path().join("cache").as_path()).unwrap();
+
+        assert!(!state.is_graph_populated());
+
+        let result = state.populate_graph_from_build_files();
+        assert!(result.is_ok());
+        assert!(state.is_graph_populated());
+        assert_eq!(result.unwrap(), 0);
     }
 }

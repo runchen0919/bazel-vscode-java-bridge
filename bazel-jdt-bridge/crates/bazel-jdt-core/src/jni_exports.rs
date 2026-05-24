@@ -194,6 +194,25 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeInitialize(
         reg.insert(key, Box::new(state));
     }
 
+    // Populate dependency graph from BUILD files at initialization time.
+    // This ensures the graph is never empty, even when Java side takes the
+    // fast-reload path (tryFastReload) which skips populateGraph().
+    {
+        let reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(state) = reg.get(&key) {
+            match state.populate_graph_from_build_files() {
+                Ok(count) => log::info!(
+                    "nativeInitialize: populated graph from {} BUILD files",
+                    count
+                ),
+                Err(e) => log::warn!(
+                    "nativeInitialize: failed to populate graph from BUILD files: {}",
+                    e
+                ),
+            }
+        }
+    }
+
     key as jlong
 }
 

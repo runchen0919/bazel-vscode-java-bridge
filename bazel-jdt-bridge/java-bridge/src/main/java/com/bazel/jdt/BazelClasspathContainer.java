@@ -77,11 +77,22 @@ public class BazelClasspathContainer implements IClasspathContainer {
             case "LIB":
                 IPath jarPath = Path.fromPortableString(path);
                 if (!fileExists(path, jarPath)) {
-                    if (WARNED_MISSING_PATHS.add(path)) {
-                        LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
-                            "Skipping non-existent JAR: " + path));
+                    String workspacePath = BazelBridge.getInstance().getWorkspacePath();
+                    if (workspacePath != null) {
+                        String fallback = BazelExternalRepoResolver.resolveFallbackJar(
+                            path, workspacePath);
+                        if (fallback != null) {
+                            jarPath = Path.fromPortableString(fallback);
+                            path = fallback;
+                        }
                     }
-                    return null;
+                    if (!fileExists(path, jarPath)) {
+                        if (WARNED_MISSING_PATHS.add(path)) {
+                            LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                                "Skipping non-existent JAR: " + path));
+                        }
+                        return null;
+                    }
                 }
                 IPath srcPath = sourcePath != null ? Path.fromPortableString(sourcePath) : null;
                 if (srcPath != null && !fileExists(sourcePath, srcPath)) {
@@ -146,6 +157,13 @@ public class BazelClasspathContainer implements IClasspathContainer {
                 }
                 return JavaCore.newProjectEntry(Path.fromPortableString("/" + projectName));
             case "SRC":
+                if (isTest) {
+                    IClasspathAttribute[] testAttrs = new IClasspathAttribute[]{
+                        JavaCore.newClasspathAttribute(IClasspathAttribute.TEST, "true")
+                    };
+                    return JavaCore.newSourceEntry(Path.fromPortableString(path),
+                        null, null, null, testAttrs);
+                }
                 return JavaCore.newSourceEntry(Path.fromPortableString(path));
             default:
                 return null;

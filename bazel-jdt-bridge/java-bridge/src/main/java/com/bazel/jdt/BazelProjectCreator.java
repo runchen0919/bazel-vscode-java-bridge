@@ -20,6 +20,7 @@ import org.eclipse.core.runtime.IStatus;
 import org.eclipse.core.runtime.Path;
 import org.eclipse.core.runtime.Platform;
 import org.eclipse.core.runtime.Status;
+import org.eclipse.jdt.core.IClasspathAttribute;
 import org.eclipse.jdt.core.IClasspathEntry;
 import org.eclipse.jdt.core.IJavaProject;
 import org.eclipse.jdt.core.JavaCore;
@@ -37,12 +38,18 @@ public final class BazelProjectCreator {
     public static IProject createProjectForPackage(
             String workspacePath, String packagePath, String targetLabel,
             IProgressMonitor monitor) {
-        return createProjectForPackage(workspacePath, packagePath, targetLabel, monitor, false);
+        return createProjectForPackage(workspacePath, packagePath, targetLabel, monitor, false, false);
     }
 
     public static IProject createProjectForPackage(
             String workspacePath, String packagePath, String targetLabel,
             IProgressMonitor monitor, boolean deferContainerResolution) {
+        return createProjectForPackage(workspacePath, packagePath, targetLabel, monitor, deferContainerResolution, false);
+    }
+
+    public static IProject createProjectForPackage(
+            String workspacePath, String packagePath, String targetLabel,
+            IProgressMonitor monitor, boolean deferContainerResolution, boolean isTestProject) {
         try {
             String projectName = LabelUtils.toProjectName(packagePath);
             IWorkspaceRoot workspaceRoot = ResourcesPlugin.getWorkspace().getRoot();
@@ -90,7 +97,7 @@ public final class BazelProjectCreator {
             preCreateResourceFilter(project);
             ensureNatures(project, monitor);
             String inferredSourceRoot = SourceRootUtils.inferSourceRoot(workspacePath, packagePath);
-            configureClasspath(project, packagePath, workspacePath, targetLabel, inferredSourceRoot, monitor, deferContainerResolution);
+            configureClasspath(project, packagePath, workspacePath, targetLabel, inferredSourceRoot, monitor, deferContainerResolution, isTestProject);
 
             return project;
         } catch (Exception e) {
@@ -165,7 +172,8 @@ public final class BazelProjectCreator {
 
     private static void configureClasspath(IProject project, String packageName,
             String workspacePath, String targetLabel, String inferredSourceRoot,
-            IProgressMonitor monitor, boolean deferContainerResolution) throws CoreException {
+            IProgressMonitor monitor, boolean deferContainerResolution,
+            boolean isTestProject) throws CoreException {
         IJavaProject javaProject = JavaCore.create(project);
 
         List<IClasspathEntry> sourceEntries = new ArrayList<>();
@@ -179,7 +187,7 @@ public final class BazelProjectCreator {
                     linkedFolder.createLink(new Path(srcDir.getAbsolutePath()), 0, monitor);
                 }
                 IPath sourcePath = new Path("/" + project.getName() + "/" + linkedName);
-                sourceEntries.add(JavaCore.newSourceEntry(sourcePath));
+                sourceEntries.add(newSourceEntry(sourcePath, isTestProject));
             }
         }
 
@@ -188,15 +196,18 @@ public final class BazelProjectCreator {
             if (inferredSourceRoot != null) {
                 try {
                     SourceRootUtils.configureLinkedSourceFolder(
-                        project, workspacePath, inferredSourceRoot, packageName, entries, monitor);
+                        project, workspacePath, inferredSourceRoot, packageName, entries,
+                        monitor, isTestProject);
                 } catch (Exception e) {
                     LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
                         "Failed to create linked source folder for " + packageName
                         + ", falling back to linked package folder: " + e.getMessage()));
-                    configureLinkedPackageFolder(project, workspacePath, packageName, entries, monitor);
+                    configureLinkedPackageFolder(project, workspacePath, packageName, entries,
+                        monitor, isTestProject);
                 }
             } else {
-                configureLinkedPackageFolder(project, workspacePath, packageName, entries, monitor);
+                configureLinkedPackageFolder(project, workspacePath, packageName, entries,
+                    monitor, isTestProject);
             }
         } else {
             entries.addAll(sourceEntries);
@@ -216,14 +227,24 @@ public final class BazelProjectCreator {
 
     private static void configureLinkedPackageFolder(IProject project, String workspacePath,
             String packageName, List<IClasspathEntry> entries,
-            IProgressMonitor monitor) throws CoreException {
+            IProgressMonitor monitor, boolean isTestProject) throws CoreException {
         String linkedName = "_pkg";
         org.eclipse.core.resources.IFolder linkedFolder = project.getFolder(linkedName);
         if (!linkedFolder.exists()) {
             File packageDir = new File(workspacePath, packageName);
             linkedFolder.createLink(new Path(packageDir.getAbsolutePath()), 0, monitor);
         }
-        entries.add(JavaCore.newSourceEntry(new Path("/" + project.getName() + "/" + linkedName)));
+        entries.add(newSourceEntry(new Path("/" + project.getName() + "/" + linkedName), isTestProject));
+    }
+
+    static IClasspathEntry newSourceEntry(IPath path, boolean isTestProject) {
+        if (isTestProject) {
+            IClasspathAttribute[] attrs = new IClasspathAttribute[]{
+                JavaCore.newClasspathAttribute(IClasspathAttribute.TEST, "true")
+            };
+            return JavaCore.newSourceEntry(path, null, null, null, attrs);
+        }
+        return JavaCore.newSourceEntry(path);
     }
 
     private static void addJreContainerEntry(List<IClasspathEntry> entries) {

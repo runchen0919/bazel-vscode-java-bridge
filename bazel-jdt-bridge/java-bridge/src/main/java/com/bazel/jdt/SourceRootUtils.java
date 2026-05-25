@@ -17,7 +17,7 @@ import org.eclipse.core.runtime.IPath;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.Path;
 import org.eclipse.jdt.core.IClasspathEntry;
-import org.eclipse.jdt.core.JavaCore;
+
 
 public final class SourceRootUtils {
 
@@ -178,6 +178,13 @@ public final class SourceRootUtils {
     public static void configureLinkedSourceFolder(IProject project, String workspacePath,
             String sourceRoot, String packagePath, List<IClasspathEntry> entries,
             IProgressMonitor monitor) throws CoreException {
+        configureLinkedSourceFolder(project, workspacePath, sourceRoot, packagePath, entries,
+            monitor, false);
+    }
+
+    public static void configureLinkedSourceFolder(IProject project, String workspacePath,
+            String sourceRoot, String packagePath, List<IClasspathEntry> entries,
+            IProgressMonitor monitor, boolean isTestProject) throws CoreException {
         String topFolderName = linkedFolderName(sourceRoot);
         String prefix = sourceRoot + "/";
         String declPath = packagePath.startsWith(prefix)
@@ -191,7 +198,7 @@ public final class SourceRootUtils {
             }
             linkedFolder.refreshLocal(IResource.DEPTH_INFINITE, monitor);
             IPath sourcePath = new Path("/" + project.getName() + "/" + topFolderName);
-            entries.add(JavaCore.newSourceEntry(sourcePath));
+            entries.add(BazelProjectCreator.newSourceEntry(sourcePath, isTestProject));
             LOG.info("Configured linked source folder '" + topFolderName + "' → " + sourceRoot
                 + " for project " + project.getName());
             return;
@@ -219,7 +226,7 @@ public final class SourceRootUtils {
         leafFolder.refreshLocal(IResource.DEPTH_INFINITE, monitor);
 
         IPath sourcePath = new Path("/" + project.getName() + "/" + topFolderName);
-        entries.add(JavaCore.newSourceEntry(sourcePath));
+        entries.add(BazelProjectCreator.newSourceEntry(sourcePath, isTestProject));
 
         LOG.info("Configured linked source folder '" + topFolderName + "/" + declPath
             + "' → " + packagePath + " for project " + project.getName());

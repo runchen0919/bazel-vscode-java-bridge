@@ -85,6 +85,15 @@ public final class BazelBridge {
         }
     }
 
+    public String getWorkspacePath() {
+        rwLock.readLock().lock();
+        try {
+            return lastWorkspacePath;
+        } finally {
+            rwLock.readLock().unlock();
+        }
+    }
+
     public String[] discoverTargets(String[] scopePatterns) {
         return discoverTargets(scopePatterns, null);
     }
@@ -381,10 +390,17 @@ public final class BazelBridge {
     private native String[] nativeGetTransitiveWorkspaceDeps(long handle, String[] targetLabels);
     private native String[] nativeSyncIncremental(long handle, String[] changedFilePaths);
     private native String nativeGetAspectBuildStats(long handle);
+    private native boolean nativeIsTestTarget(long handle, String targetLabel);
 
     public String getAspectBuildStats() {
         long h = snapshotHandleNullable();
         if (h == -1) return null;
         return nativeGetAspectBuildStats(h);
+    }
+
+    public boolean isTestTarget(String targetLabel) {
+        long h = snapshotHandleNullable();
+        if (h == -1) return false;
+        return nativeIsTestTarget(h, targetLabel);
     }
 }

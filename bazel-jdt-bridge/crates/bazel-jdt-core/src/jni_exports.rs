@@ -397,6 +397,27 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeQueryTargets(
 }
 
 #[no_mangle]
+pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeIsTestTarget(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    target_label: JString,
+) -> jboolean {
+    let state = match get_state(&mut env, handle) {
+        Some(s) => s,
+        None => return 0,
+    };
+    let label: String = match env.get_string(&target_label) {
+        Ok(s) => s.into(),
+        Err(_) => return 0,
+    };
+    let graph = state.graph.lock().unwrap_or_else(|e| e.into_inner());
+    let is_test = graph.get_target_kind(&label) == bazel_graph::TargetKind::JavaTest;
+    drop(graph);
+    if is_test { 1 } else { 0 }
+}
+
+#[no_mangle]
 pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativePopulateGraph(
     mut env: JNIEnv,
     _class: JClass,

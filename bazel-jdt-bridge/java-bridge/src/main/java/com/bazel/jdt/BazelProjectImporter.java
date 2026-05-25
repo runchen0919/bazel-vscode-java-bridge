@@ -175,8 +175,9 @@ public class BazelProjectImporter extends AbstractProjectImporter {
                     for (String targetLabel : finalTargets) {
                         try {
                             String packagePath = extractPackageName(targetLabel);
+                            boolean isTestTarget = bridge.isTestTarget(targetLabel);
                             IProject project = BazelProjectCreator.createProjectForPackage(
-                                workspacePath, packagePath, targetLabel, pm, true);
+                                workspacePath, packagePath, targetLabel, pm, true, isTestTarget);
 
                             if (firstProject && project != null) {
                                 if (TargetProjectMapping.readWorkspaceConfig(project) == null) {

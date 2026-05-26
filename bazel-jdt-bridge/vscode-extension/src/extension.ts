@@ -40,6 +40,21 @@ function activateFull(context: vscode.ExtensionContext, workspaceRoot: string) {
         )
     );
 
+    context.subscriptions.push(
+        vscode.debug.onDidTerminateDebugSession(async (session) => {
+            if (session.type === 'java') {
+                try {
+                    await vscode.commands.executeCommand(
+                        'java.execute.workspaceCommand',
+                        'bazel-jdt.clearActiveDebugProject'
+                    );
+                } catch {
+                    // LSP connection may be closed — safe to ignore
+                }
+            }
+        })
+    );
+
     let dependencyPackageCache: string[] = [];
 
     const bazelprojectPattern = new vscode.RelativePattern(workspaceRoot, '.bazelproject');

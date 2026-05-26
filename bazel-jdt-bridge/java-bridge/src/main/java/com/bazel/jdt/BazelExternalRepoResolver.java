@@ -64,20 +64,70 @@ public final class BazelExternalRepoResolver {
             if (outputBase == null) return null;
 
             String repoName = extractRepoName(path);
-            if (repoName == null) return null;
-
-            File repoDir = new File(outputBase, "external/" + repoName);
-            if (!repoDir.isDirectory()) {
-                repoDir = findBzlmodRepoDir(outputBase, repoName);
+            if (repoName != null) {
+                File repoDir = new File(outputBase, "external/" + repoName);
+                if (!repoDir.isDirectory()) {
+                    repoDir = findBzlmodRepoDir(outputBase, repoName);
+                }
+                if (repoDir != null && repoDir.isDirectory()) {
+                    String found = findJarInDirectory(repoDir, MAX_JAR_SEARCH_DEPTH);
+                    if (found != null) {
+                        LOG.info("Fallback JAR resolved: " + path + " -> " + found);
+                        return found;
+                    }
+                }
+                return null;
             }
-            if (repoDir == null || !repoDir.isDirectory()) return null;
 
-            String found = findJarInDirectory(repoDir, MAX_JAR_SEARCH_DEPTH);
-            if (found != null) {
-                LOG.info("Fallback JAR resolved: " + path + " -> " + found);
-            }
-            return found;
+            return resolveBuildOutputJar(path, outputBase);
         });
+    }
+
+    static String resolveBuildOutputJar(String missingPath, String outputBase) {
+        String artifactName = extractArtifactNameFromLibJar(missingPath);
+        if (artifactName == null) return null;
+
+        File repoDir = findCandidateRepoDir(outputBase, artifactName);
+        if (repoDir == null) return null;
+
+        String found = findJarInDirectory(repoDir, MAX_JAR_SEARCH_DEPTH);
+        if (found != null) {
+            LOG.info("Build-output JAR resolved: " + missingPath + " -> " + found);
+        }
+        return found;
+    }
+
+    static String extractArtifactNameFromLibJar(String path) {
+        String fileName = path;
+        int lastSlash = path.lastIndexOf('/');
+        if (lastSlash >= 0) {
+            fileName = path.substring(lastSlash + 1);
+        }
+        if (!fileName.startsWith("lib") || !fileName.endsWith(".jar")) return null;
+        String name = fileName.substring(3, fileName.length() - 4);
+        if (name.isEmpty()) return null;
+        return name;
+    }
+
+    static File findCandidateRepoDir(String outputBase, String artifactName) {
+        File externalRoot = new File(outputBase, "external");
+        if (!externalRoot.isDirectory()) return null;
+
+        File exact1 = new File(externalRoot, artifactName + "_" + artifactName);
+        if (exact1.isDirectory()) return exact1;
+
+        File exact2 = new File(externalRoot, artifactName);
+        if (exact2.isDirectory()) return exact2;
+
+        File[] prefixMatches = externalRoot.listFiles((dir, name) ->
+            name.startsWith(artifactName + "_"));
+        if (prefixMatches != null && prefixMatches.length > 0) {
+            for (File candidate : prefixMatches) {
+                if (candidate.isDirectory()) return candidate;
+            }
+        }
+
+        return findBzlmodRepoDir(outputBase, artifactName);
     }
 
     static String extractRepoName(String path) {

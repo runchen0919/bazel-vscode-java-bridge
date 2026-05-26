@@ -39,9 +39,16 @@ public class BazelCommandHandler implements IDelegateCommandHandler {
                 return handleBuildTarget(arguments);
             case "bazel-jdt.setActiveDebugProject":
                 return handleSetActiveDebugProject(arguments);
+            case "bazel-jdt.clearActiveDebugProject":
+                return handleClearActiveDebugProject();
             default:
                 return null;
         }
+    }
+
+    private Object handleClearActiveDebugProject() {
+        BazelRuntimeClasspathEntryResolver.clearActiveDebugProject();
+        return null;
     }
 
     private Object handleImportProject(List<Object> arguments) {

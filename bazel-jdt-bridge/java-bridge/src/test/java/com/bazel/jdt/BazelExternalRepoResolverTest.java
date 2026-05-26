@@ -126,12 +126,171 @@ public class BazelExternalRepoResolverTest {
     }
 
     @Test
-    public void resolveFallbackJarReturnsNullForNonExternalPath() {
+    public void resolveFallbackJarResolvesLibJarViaBuildOutput() throws IOException {
+        String outputBase = tempDir.toString();
+        File repoDir = new File(outputBase, "external/junit_junit/jar");
+        assertTrue(repoDir.mkdirs());
+        File jar = new File(repoDir, "junit-4.13.2.jar");
+        assertTrue(jar.createNewFile());
+
+        String wsPath = tempDir.resolve("workspace").toString();
+        BazelExternalRepoResolver.setOutputBaseForTest(wsPath, outputBase);
+
+        String result = BazelExternalRepoResolver.resolveFallbackJar(
+            "/workspace/bazel-out/darwin_arm64-fastbuild/bin/3rdparty/libjunit.jar", wsPath);
+        assertNotNull("Should resolve lib<name>.jar via build-output fallback", result);
+        assertEquals(jar.getAbsolutePath(), result);
+    }
+
+    @Test
+    public void resolveFallbackJarReturnsNullForNonExternalNonLibPath() {
         String wsPath = tempDir.resolve("workspace").toString();
         BazelExternalRepoResolver.setOutputBaseForTest(wsPath, tempDir.toString());
 
         String result = BazelExternalRepoResolver.resolveFallbackJar(
-            "/workspace/bazel-out/bin/3rdparty/libjunit.jar", wsPath);
+            "/workspace/bazel-out/bin/3rdparty/junit.jar", wsPath);
+        assertNull(result);
+    }
+
+    // --- extractArtifactNameFromLibJar tests ---
+
+    @Test
+    public void extractArtifactNameFromValidLibJar() {
+        assertEquals("junit",
+            BazelExternalRepoResolver.extractArtifactNameFromLibJar(
+                "/workspace/bazel-out/bin/3rdparty/libjunit.jar"));
+    }
+
+    @Test
+    public void extractArtifactNameFromLibJarWithUnderscore() {
+        assertEquals("hamcrest_core",
+            BazelExternalRepoResolver.extractArtifactNameFromLibJar(
+                "bazel-out/bin/3rdparty/libhamcrest_core.jar"));
+    }
+
+    @Test
+    public void extractArtifactNameReturnsNullForNonLibPrefix() {
+        assertNull(BazelExternalRepoResolver.extractArtifactNameFromLibJar(
+            "bazel-out/bin/3rdparty/junit.jar"));
+    }
+
+    @Test
+    public void extractArtifactNameReturnsNullForNonJarExtension() {
+        assertNull(BazelExternalRepoResolver.extractArtifactNameFromLibJar(
+            "bazel-out/bin/3rdparty/libfoo.txt"));
+    }
+
+    @Test
+    public void extractArtifactNameReturnsNullForEmptyName() {
+        assertNull(BazelExternalRepoResolver.extractArtifactNameFromLibJar(
+            "bazel-out/bin/3rdparty/lib.jar"));
+    }
+
+    @Test
+    public void extractArtifactNameFromFileNameOnly() {
+        assertEquals("guava",
+            BazelExternalRepoResolver.extractArtifactNameFromLibJar("libguava.jar"));
+    }
+
+    // --- findCandidateRepoDir tests ---
+
+    @Test
+    public void findCandidateRepoDirExactDoubleMatch() throws IOException {
+        String outputBase = tempDir.toString();
+        File exact = new File(outputBase, "external/junit_junit");
+        assertTrue(exact.mkdirs());
+
+        File result = BazelExternalRepoResolver.findCandidateRepoDir(outputBase, "junit");
+        assertNotNull(result);
+        assertEquals(exact.getAbsolutePath(), result.getAbsolutePath());
+    }
+
+    @Test
+    public void findCandidateRepoDirExactSingleMatch() throws IOException {
+        String outputBase = tempDir.toString();
+        File exact = new File(outputBase, "external/guava");
+        assertTrue(exact.mkdirs());
+
+        File result = BazelExternalRepoResolver.findCandidateRepoDir(outputBase, "guava");
+        assertNotNull(result);
+        assertEquals(exact.getAbsolutePath(), result.getAbsolutePath());
+    }
+
+    @Test
+    public void findCandidateRepoDirPrefersDoubleOverSingle() throws IOException {
+        String outputBase = tempDir.toString();
+        File single = new File(outputBase, "external/junit");
+        assertTrue(single.mkdirs());
+        File double_ = new File(outputBase, "external/junit_junit");
+        assertTrue(double_.mkdirs());
+
+        File result = BazelExternalRepoResolver.findCandidateRepoDir(outputBase, "junit");
+        assertNotNull(result);
+        assertEquals(double_.getAbsolutePath(), result.getAbsolutePath());
+    }
+
+    @Test
+    public void findCandidateRepoDirPrefixMatch() throws IOException {
+        String outputBase = tempDir.toString();
+        File prefixed = new File(outputBase, "external/guava_guava_jre");
+        assertTrue(prefixed.mkdirs());
+
+        File result = BazelExternalRepoResolver.findCandidateRepoDir(outputBase, "guava");
+        assertNotNull(result);
+        assertEquals(prefixed.getAbsolutePath(), result.getAbsolutePath());
+    }
+
+    @Test
+    public void findCandidateRepoDirBzlmodMatch() throws IOException {
+        String outputBase = tempDir.toString();
+        File bzlmod = new File(outputBase, "external/rules_jvm_external~~maven~junit");
+        assertTrue(bzlmod.mkdirs());
+
+        File result = BazelExternalRepoResolver.findCandidateRepoDir(outputBase, "junit");
+        assertNotNull(result);
+        assertEquals(bzlmod.getAbsolutePath(), result.getAbsolutePath());
+    }
+
+    @Test
+    public void findCandidateRepoDirNoMatch() throws IOException {
+        String outputBase = tempDir.toString();
+        File externalDir = new File(outputBase, "external");
+        assertTrue(externalDir.mkdirs());
+
+        assertNull(BazelExternalRepoResolver.findCandidateRepoDir(outputBase, "nonexistent"));
+    }
+
+    // --- resolveBuildOutputJar end-to-end tests ---
+
+    @Test
+    public void resolveBuildOutputJarEndToEnd() throws IOException {
+        String outputBase = tempDir.toString();
+        File repoDir = new File(outputBase, "external/hamcrest_core/jar");
+        assertTrue(repoDir.mkdirs());
+        File jar = new File(repoDir, "hamcrest-core-1.3.jar");
+        assertTrue(jar.createNewFile());
+
+        String result = BazelExternalRepoResolver.resolveBuildOutputJar(
+            "bazel-out/k8-fastbuild/bin/3rdparty/libhamcrest_core.jar", outputBase);
+        assertNotNull(result);
+        assertEquals(jar.getAbsolutePath(), result);
+    }
+
+    @Test
+    public void resolveBuildOutputJarReturnsNullForNonLibJar() {
+        String result = BazelExternalRepoResolver.resolveBuildOutputJar(
+            "bazel-out/bin/3rdparty/junit.jar", tempDir.toString());
+        assertNull(result);
+    }
+
+    @Test
+    public void resolveBuildOutputJarReturnsNullWhenNoRepoDir() throws IOException {
+        String outputBase = tempDir.toString();
+        File externalDir = new File(outputBase, "external");
+        assertTrue(externalDir.mkdirs());
+
+        String result = BazelExternalRepoResolver.resolveBuildOutputJar(
+            "bazel-out/bin/3rdparty/libunknown.jar", outputBase);
         assertNull(result);
     }
 

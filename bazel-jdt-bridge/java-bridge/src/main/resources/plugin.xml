@@ -26,6 +26,7 @@
             <command id="bazel-jdt.shutdown"/>
             <command id="bazel-jdt.buildTarget"/>
             <command id="bazel-jdt.setActiveDebugProject"/>
+            <command id="bazel-jdt.clearActiveDebugProject"/>
         </delegateCommandHandler>
     </extension>
 

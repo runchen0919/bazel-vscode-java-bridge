@@ -104,6 +104,7 @@ function activateFull(context: vscode.ExtensionContext, workspaceRoot: string) {
                     }
                 }
 
+                refreshTestDiscovery();
                 vscode.window.showInformationMessage('Bazel project re-imported (scope changed)');
             } catch {
                 // Silently ignore — re-import is best-effort
@@ -117,6 +118,13 @@ function activateFull(context: vscode.ExtensionContext, workspaceRoot: string) {
         watcher,
         statusBarItem,
     );
+
+    // Trigger test discovery after JDT.LS finishes initial import
+    const javaExt = vscode.extensions.getExtension('redhat.java');
+    const javaApi = javaExt?.exports;
+    if (javaApi?.serverReady) {
+        javaApi.serverReady().then(() => refreshTestDiscovery()).catch(() => {});
+    }
 
     // On-demand dependency source loading: monitor opened Java files
     context.subscriptions.push(
@@ -169,6 +177,19 @@ function setupCreationOnlyWatcher(context: vscode.ExtensionContext, workspaceRoo
     );
 
     context.subscriptions.push(watcher);
+}
+
+async function refreshTestDiscovery(): Promise<void> {
+    try {
+        const testExtension = vscode.extensions.getExtension('vscjava.vscode-java-test');
+        if (!testExtension) return;
+        if (!testExtension.isActive) {
+            await testExtension.activate();
+        }
+        await vscode.commands.executeCommand('testing.refreshTests');
+    } catch {
+        // Test discovery is best-effort — never block import
+    }
 }
 
 export async function deactivate() {

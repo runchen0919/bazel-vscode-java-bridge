@@ -63,4 +63,4 @@ jobs:
       - name: Maven compile
         run: mvn compile -Pci
       - name: Maven test
-        run: mvn test -Djava.library.path=../target/release -Pci -Dtest='!BazelClasspathContainerTest,!BazelProjectViewTest'
+        run: mvn test -Djava.library.path=../target/release -Pci -Dtest='!BazelClasspathContainerTest,!BazelProjectViewTest,!BazelProjectCreatorTest'

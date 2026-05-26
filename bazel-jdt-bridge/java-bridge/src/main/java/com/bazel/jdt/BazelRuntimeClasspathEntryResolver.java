@@ -90,8 +90,6 @@ public class BazelRuntimeClasspathEntryResolver implements IRuntimeClasspathEntr
                 result.add(rte);
             }
 
-            LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
-                "Resolved " + result.size() + " runtime classpath entries for " + project.getElementName()));
             return result.toArray(EMPTY);
         } catch (Exception e) {
             LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",

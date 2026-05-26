@@ -68,6 +68,28 @@ export class BazelDebugConfigurationProvider implements vscode.DebugConfiguratio
             }
         }
 
+        // The test runner pre-resolves classPaths before this handler runs,
+        // so newly-built JARs (e.g. the test's own output) are missing.
+        // Re-resolve from the updated container and merge new entries.
+        // We merge rather than replace to keep test-runner JARs (RemoteTestRunner etc.).
+        if (config.mainClass && Array.isArray(config.classPaths)) {
+            try {
+                const resolved = await vscode.commands.executeCommand<[string[], string[]]>(
+                    'java.execute.workspaceCommand',
+                    'vscode.java.resolveClasspath', config.mainClass, config.projectName);
+                if (resolved && Array.isArray(resolved[1])) {
+                    const existing = new Set(config.classPaths as string[]);
+                    for (const entry of resolved[1]) {
+                        if (!existing.has(entry)) {
+                            (config.classPaths as string[]).push(entry);
+                        }
+                    }
+                }
+            } catch {
+                // Best-effort: fall back to the pre-resolved classpath
+            }
+        }
+
         return config;
     }
 }

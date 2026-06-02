@@ -1,9 +1,14 @@
 package com.bazel.jdt;
 
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import org.eclipse.core.resources.IProject;
+import org.eclipse.core.resources.IWorkspace;
 import org.eclipse.core.resources.ResourcesPlugin;
+import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.ILog;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.IStatus;
@@ -11,6 +16,7 @@ import org.eclipse.core.runtime.Platform;
 import org.eclipse.core.runtime.Status;
 import org.eclipse.jdt.ls.core.internal.IDelegateCommandHandler;
 import org.eclipse.jdt.ls.core.internal.JobHelpers;
+
 
 public class BazelCommandHandler implements IDelegateCommandHandler {
     private static final ILog LOG = Platform.getLog(BazelCommandHandler.class);
@@ -98,11 +104,82 @@ public class BazelCommandHandler implements IDelegateCommandHandler {
             }
 
             String[] targets = bridge.discoverTargets(scopePatterns, bridge.getBuildFlags());
-            BazelClasspathManager.refreshClasspath();
+
+            java.util.List<String> newTargetLabels = createProjectsForNewTargets(workspacePath, targets, bridge);
+
+            if (!newTargetLabels.isEmpty()) {
+                BazelClasspathManager.refreshClasspathForTargets(newTargetLabels);
+            } else {
+                BazelClasspathManager.refreshClasspath();
+            }
             return null;
         } catch (Exception e) {
             LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt", "Bazel import failed", e));
             throw new RuntimeException("Bazel import failed: " + e.getMessage(), e);
+        }
+    }
+
+    private List<String> createProjectsForNewTargets(String workspacePath, String[] targets, BazelBridge bridge) {
+        Set<String> existingTargetLabels = getExistingTargetLabels();
+        Set<String> newTargets = findNewTargets(targets, existingTargetLabels);
+
+        LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+            "Discovered " + newTargets.size() + " new targets (existing: " + existingTargetLabels.size() + ")"));
+
+        if (!newTargets.isEmpty()) {
+            createProjectsForTargets(workspacePath, newTargets, bridge);
+        }
+        return new ArrayList<>(newTargets);
+    }
+
+    private Set<String> getExistingTargetLabels() {
+        Set<String> existingTargetLabels = new HashSet<>();
+        IWorkspace workspace = ResourcesPlugin.getWorkspace();
+        for (IProject project : workspace.getRoot().getProjects()) {
+            if (!project.isOpen()) continue;
+            try {
+                if (!project.hasNature(BazelNature.NATURE_ID)) continue;
+            } catch (CoreException e) {
+                continue;
+            }
+            List<String> labels = TargetProjectMapping.readTargets(project);
+            existingTargetLabels.addAll(labels);
+        }
+        LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+            "Found " + existingTargetLabels.size() + " existing targets in " + workspace.getRoot().getProjects().length + " projects"));
+        return existingTargetLabels;
+    }
+
+    private Set<String> findNewTargets(String[] targets, Set<String> existingTargetLabels) {
+        Set<String> newTargets = new HashSet<>();
+        if (targets != null) {
+            for (String target : targets) {
+                if (!existingTargetLabels.contains(target)) {
+                    newTargets.add(target);
+                }
+            }
+        }
+        return newTargets;
+    }
+
+    private void createProjectsForTargets(String workspacePath, Set<String> newTargets, BazelBridge bridge) {
+        LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+            "Creating projects for " + newTargets.size() + " new targets: " + newTargets));
+        for (String targetLabel : newTargets) {
+            try {
+                String packagePath = LabelUtils.extractPackageName(targetLabel);
+                boolean isTestTarget = bridge.isTestTarget(targetLabel);
+                IProject project =
+                    BazelProjectCreator.createProjectForPackage(
+                        workspacePath, packagePath, targetLabel, null, true, isTestTarget);
+                if (project != null) {
+                    LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                        "Created project for target: " + targetLabel));
+                }
+            } catch (Exception e) {
+                LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                    "Failed to create project for target: " + targetLabel, e));
+            }
         }
     }
 

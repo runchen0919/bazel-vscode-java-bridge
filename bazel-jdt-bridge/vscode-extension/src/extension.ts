@@ -105,7 +105,18 @@ function activateFull(context: vscode.ExtensionContext, workspaceRoot: string) {
                 }
 
                 refreshTestDiscovery();
-                vscode.window.showInformationMessage('Bazel project re-imported (scope changed)');
+                const action = await vscode.window.showInformationMessage(
+                    'Bazel project re-imported (scope changed). If Java features don\'t work correctly, please run "Java: Clean Java Language Server Workspace" for a full reload',
+                    'Clean now',
+                    'Dismiss'
+                );
+                if (action === 'Clean now') {
+                    try {
+                        await vscode.commands.executeCommand('java.clean.workspace');
+                    } catch (error) {
+                        vscode.window.showErrorMessage(`Failed to clean workspace: ${error}`);
+                    }
+                }
             } catch {
                 // Silently ignore — re-import is best-effort
             }

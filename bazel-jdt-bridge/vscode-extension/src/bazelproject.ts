@@ -116,6 +116,56 @@ export function parseBazelprojectContent(content: string): BazelProjectViewConfi
     return config;
 }
 
+export function addDirectoryToBazelproject(
+    bazelprojectPath: string,
+    relativeDir: string
+): 'added' | 'already-exists' | 'created' {
+    if (fs.existsSync(bazelprojectPath)) {
+        const content = fs.readFileSync(bazelprojectPath, 'utf-8');
+        const config = parseBazelprojectContent(content);
+        if (config.directories.includes(relativeDir)) {
+            return 'already-exists';
+        }
+        fs.writeFileSync(bazelprojectPath, insertDirectoryIntoContent(content, relativeDir), 'utf-8');
+        return 'added';
+    } else {
+        fs.writeFileSync(
+            bazelprojectPath,
+            `directories:\n  ${relativeDir}\n\nderive_targets_from_directories: True\n`,
+            'utf-8'
+        );
+        return 'created';
+    }
+}
+
+function insertDirectoryIntoContent(content: string, dir: string): string {
+    const lines = content.split('\n');
+    let inDirectories = false;
+    let lastDirLineIdx = -1;
+
+    for (let i = 0; i < lines.length; i++) {
+        const trimmed = lines[i].trim();
+        if (trimmed === 'directories:') {
+            inDirectories = true;
+            lastDirLineIdx = i;
+            continue;
+        }
+        if (inDirectories) {
+            if (trimmed.length === 0 || trimmed.startsWith('#') || /^[a-z_]+:/i.test(trimmed)) {
+                break;
+            }
+            lastDirLineIdx = i;
+        }
+    }
+
+    if (lastDirLineIdx >= 0) {
+        lines.splice(lastDirLineIdx + 1, 0, `  ${dir}`);
+    } else {
+        lines.unshift('directories:', `  ${dir}`, '');
+    }
+    return lines.join('\n');
+}
+
 export function resolveScopePatterns(config: BazelProjectViewConfig): string[] {
     const patterns: string[] = [];
 

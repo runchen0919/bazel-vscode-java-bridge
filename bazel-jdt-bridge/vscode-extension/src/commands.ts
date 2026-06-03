@@ -1,7 +1,9 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
+import * as fs from 'fs';
 import { getConfig } from './config';
 import { runImportWizard } from './importWizard';
-import { parseBazelprojectFile } from './bazelproject';
+import { parseBazelprojectFile, addDirectoryToBazelproject } from './bazelproject';
 
 export function registerImportCommand(context: vscode.ExtensionContext) {
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
@@ -39,6 +41,34 @@ export function registerImportCommand(context: vscode.ExtensionContext) {
                 vscode.window.showInformationMessage('Bazel project imported successfully');
             } catch (error) {
                 vscode.window.showErrorMessage(`Bazel import failed: ${error}`);
+            }
+        })
+    );
+}
+
+export function registerAddDirectoryCommand(context: vscode.ExtensionContext, workspaceRoot: string) {
+    context.subscriptions.push(
+        vscode.commands.registerCommand('bazel-jdt.addDirectoryToProject', async (uri: vscode.Uri) => {
+            if (!uri) return;
+
+            const dirPath = uri.fsPath;
+            const hasBuild = fs.existsSync(path.join(dirPath, 'BUILD')) ||
+                             fs.existsSync(path.join(dirPath, 'BUILD.bazel'));
+            if (!hasBuild) {
+                vscode.window.showWarningMessage('No BUILD file found in selected directory.');
+                return;
+            }
+
+            const relativeDir = path.relative(workspaceRoot, dirPath);
+            const bazelprojectPath = path.join(workspaceRoot, '.bazelproject');
+            const result = addDirectoryToBazelproject(bazelprojectPath, relativeDir);
+
+            if (result === 'already-exists') {
+                vscode.window.showInformationMessage(`'${relativeDir}' is already in the Bazel project scope.`);
+            } else if (result === 'added') {
+                vscode.window.showInformationMessage(`Added '${relativeDir}' to Bazel project scope.`);
+            } else {
+                vscode.window.showInformationMessage(`Created .bazelproject with '${relativeDir}'.`);
             }
         })
     );

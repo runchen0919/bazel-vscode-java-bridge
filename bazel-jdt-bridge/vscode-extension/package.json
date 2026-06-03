@@ -34,8 +34,21 @@
             {
                 "command": "bazel-jdt.createProjectForPackage",
                 "title": "Bazel: Create Project for Package"
+            },
+            {
+                "command": "bazel-jdt.addDirectoryToProject",
+                "title": "Bazel: Add to Project"
             }
         ],
+        "menus": {
+            "explorer/context": [
+                {
+                    "command": "bazel-jdt.addDirectoryToProject",
+                    "when": "explorerResourceIsFolder",
+                    "group": "bazel-jdt@1"
+                }
+            ]
+        },
         "configuration": {
             "title": "Bazel JDT Bridge",
             "properties": {

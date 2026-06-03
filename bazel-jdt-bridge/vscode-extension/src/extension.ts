@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { registerImportCommand, registerRuntimeCommands } from './commands';
+import { registerImportCommand, registerRuntimeCommands, registerAddDirectoryCommand } from './commands';
 import { BazelDebugConfigurationProvider } from './debugAdapter';
 import { createStatusBar } from './statusBar';
 import { getConfig } from './config';
@@ -26,6 +26,7 @@ export async function activate(context: vscode.ExtensionContext) {
         activateFull(context, workspaceRoot);
     } else {
         registerImportCommand(context);
+        registerAddDirectoryCommand(context, workspaceRoot);
         setupCreationOnlyWatcher(context, workspaceRoot);
     }
 }
@@ -34,6 +35,7 @@ function activateFull(context: vscode.ExtensionContext, workspaceRoot: string) {
     const statusBarItem = createStatusBar(context);
     registerImportCommand(context);
     registerRuntimeCommands(context);
+    registerAddDirectoryCommand(context, workspaceRoot);
     context.subscriptions.push(
         vscode.debug.registerDebugConfigurationProvider(
             'java', new BazelDebugConfigurationProvider()

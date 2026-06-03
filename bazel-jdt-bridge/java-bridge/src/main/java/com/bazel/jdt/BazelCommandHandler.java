@@ -1,8 +1,10 @@
 package com.bazel.jdt;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.eclipse.core.resources.IProject;
@@ -47,6 +49,8 @@ public class BazelCommandHandler implements IDelegateCommandHandler {
                 return handleSetActiveDebugProject(arguments);
             case "bazel-jdt.clearActiveDebugProject":
                 return handleClearActiveDebugProject();
+            case "bazel-jdt.partialSync":
+                return handlePartialSync(arguments);
             default:
                 return null;
         }
@@ -180,6 +184,87 @@ public class BazelCommandHandler implements IDelegateCommandHandler {
                 LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
                     "Failed to create project for target: " + targetLabel, e));
             }
+        }
+    }
+
+    private Object handlePartialSync(List<Object> arguments) {
+        try {
+            if (arguments.isEmpty() || !(arguments.get(0) instanceof String)) {
+                throw new IllegalArgumentException("Scope pattern required");
+            }
+            String scopePattern = (String) arguments.get(0);
+
+            BazelBridge bridge = BazelBridge.getInstance();
+            if (!bridge.isInitialized()) {
+                throw new IllegalStateException(
+                    "Bazel project not imported yet. Import the project first.");
+            }
+
+            String syncMode = arguments.size() > 1 && arguments.get(1) instanceof String
+                ? (String) arguments.get(1) : bridge.getSyncMode();
+            bridge.setSyncMode(syncMode);
+
+            LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                "Partial sync: querying targets for " + scopePattern));
+            String[] targets = bridge.queryTargets(new String[]{scopePattern});
+            if (targets == null || targets.length == 0) {
+                LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                    "Partial sync: no targets found for " + scopePattern));
+                Map<String, Object> result = new HashMap<>();
+                result.put("refreshed", 0);
+                result.put("newTargets", new ArrayList<String>());
+                return result;
+            }
+
+            String[] rdeps = bridge.getReverseDepsInProjects(targets);
+            int rdepCount = rdeps != null ? rdeps.length : 0;
+            LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                "Partial sync: " + targets.length + " scope targets, " + rdepCount + " rdep targets"));
+
+            Set<String> mergedSet = new java.util.LinkedHashSet<>();
+            for (String t : targets) mergedSet.add(t);
+            if (rdeps != null) {
+                for (String r : rdeps) mergedSet.add(r);
+            }
+            String[] mergedTargets = mergedSet.toArray(new String[0]);
+
+            LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                "Partial sync: running aspect build for " + mergedTargets.length + " targets (scope + rdeps)"));
+            bridge.runAspectBuild(mergedTargets, bridge.getBuildFlags());
+
+            Set<String> existingTargetLabels = getExistingTargetLabels();
+            List<String> existingTargets = new ArrayList<>();
+            List<String> newTargets = new ArrayList<>();
+            for (String label : mergedTargets) {
+                if (!label.startsWith("//")) {
+                    LOG.log(new Status(IStatus.WARNING, "com.bazel.jdt",
+                        "Partial sync: skipping invalid label: " + label));
+                    continue;
+                }
+                if (existingTargetLabels.contains(label)) {
+                    existingTargets.add(label);
+                } else {
+                    newTargets.add(label);
+                }
+            }
+
+            LOG.log(new Status(IStatus.INFO, "com.bazel.jdt",
+                "Partial sync: " + existingTargets.size() + " existing, "
+                + newTargets.size() + " new targets"));
+
+            if (!existingTargets.isEmpty()) {
+                BazelClasspathManager.refreshClasspathForTargets(existingTargets, true);
+            }
+
+            Map<String, Object> result = new HashMap<>();
+            result.put("refreshed", existingTargets.size());
+            result.put("newTargets", newTargets);
+            result.put("rdeps", rdepCount);
+            return result;
+        } catch (Exception e) {
+            LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",
+                "Partial sync failed", e));
+            throw new RuntimeException("Partial sync failed: " + e.getMessage(), e);
         }
     }
 

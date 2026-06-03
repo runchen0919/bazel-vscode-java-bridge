@@ -38,6 +38,10 @@
             {
                 "command": "bazel-jdt.addDirectoryToProject",
                 "title": "Bazel: Add to Project"
+            },
+            {
+                "command": "bazel-jdt.partialSync",
+                "title": "Bazel: Partially Sync Package"
             }
         ],
         "menus": {
@@ -46,6 +50,11 @@
                     "command": "bazel-jdt.addDirectoryToProject",
                     "when": "explorerResourceIsFolder",
                     "group": "bazel-jdt@1"
+                },
+                {
+                    "command": "bazel-jdt.partialSync",
+                    "when": "explorerResourceIsFolder",
+                    "group": "bazel-jdt@2"
                 }
             ]
         },

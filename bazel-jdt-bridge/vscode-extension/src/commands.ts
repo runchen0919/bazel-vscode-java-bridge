@@ -5,6 +5,8 @@ import { getConfig } from './config';
 import { runImportWizard } from './importWizard';
 import { parseBazelprojectFile, addDirectoryToBazelproject } from './bazelproject';
 
+let syncInProgress = false;
+
 export function registerImportCommand(context: vscode.ExtensionContext) {
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
 
@@ -77,12 +79,19 @@ export function registerAddDirectoryCommand(context: vscode.ExtensionContext, wo
 export function registerRuntimeCommands(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.commands.registerCommand('bazel-jdt.syncProject', async () => {
+            if (syncInProgress) {
+                vscode.window.showWarningMessage('A sync is already in progress.');
+                return;
+            }
+            syncInProgress = true;
             try {
                 const config = getConfig();
                 await vscode.commands.executeCommand('java.execute.workspaceCommand',
                     'bazel-jdt.syncProject', config.dependencyResolution, config.dependencySourceLoading);
             } catch (error) {
                 vscode.window.showErrorMessage(`Bazel sync failed: ${error}`);
+            } finally {
+                syncInProgress = false;
             }
         })
     );
@@ -113,6 +122,73 @@ export function registerRuntimeCommands(context: vscode.ExtensionContext) {
                 'bazel-jdt.createProjectForPackage', workspaceRoot, config.bazelPath,
                 config.cacheDir, packagePath, targetLabel);
             vscode.window.showInformationMessage(`Created project for ${packagePath}`);
+        })
+    );
+}
+
+export function registerPartialSyncCommand(context: vscode.ExtensionContext) {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('bazel-jdt.partialSync', async (uri: vscode.Uri) => {
+            if (!uri) {
+                vscode.window.showWarningMessage('No folder selected.');
+                return;
+            }
+
+            if (syncInProgress) {
+                vscode.window.showWarningMessage('A sync is already in progress.');
+                return;
+            }
+
+            const dirPath = uri.fsPath;
+            const hasBuild = fs.existsSync(path.join(dirPath, 'BUILD'))
+                || fs.existsSync(path.join(dirPath, 'BUILD.bazel'));
+            if (!hasBuild) {
+                vscode.window.showInformationMessage('No BUILD file found in this directory.');
+                return;
+            }
+
+            const relativePath = path.relative(workspaceRoot, dirPath).replace(/\\/g, '/');
+            const scopePattern = `//${relativePath}/...:all`;
+
+            syncInProgress = true;
+            try {
+                const config = getConfig();
+                const result = await vscode.window.withProgress(
+                    {
+                        location: vscode.ProgressLocation.Notification,
+                        title: `Partially syncing ${scopePattern}`,
+                        cancellable: false,
+                    },
+                    async (progress) => {
+                        progress.report({ message: 'Querying targets...' });
+                        const syncResult = await vscode.commands.executeCommand(
+                            'java.execute.workspaceCommand',
+                            'bazel-jdt.partialSync', scopePattern, config.syncMode) as
+                            { refreshed?: number; newTargets?: string[] } | null;
+                        return syncResult;
+                    }
+                );
+
+                const newTargets = (result?.newTargets ?? []).filter(
+                    (label: string) => label.startsWith('//') && label.includes(':'));
+
+                if (newTargets.length > 0) {
+                    for (const targetLabel of newTargets) {
+                        const packagePath = targetLabel.replace(/^\/\//, '').replace(/:.*$/, '');
+                        await vscode.commands.executeCommand('java.execute.workspaceCommand',
+                            'bazel-jdt.createProjectForPackage', workspaceRoot, config.bazelPath,
+                            config.cacheDir, packagePath, targetLabel);
+                    }
+                    await vscode.commands.executeCommand('java.execute.workspaceCommand',
+                        'bazel-jdt.syncProject', config.dependencyResolution, config.dependencySourceLoading);
+                }
+            } catch (error) {
+                vscode.window.showErrorMessage(`Partial sync failed: ${error}`);
+            } finally {
+                syncInProgress = false;
+            }
         })
     );
 }

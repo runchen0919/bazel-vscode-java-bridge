@@ -312,6 +312,23 @@ public final class BazelBridge {
         }
     }
 
+    public String[] getReverseDepsInProjects(String[] targetLabels) {
+        long h = snapshotHandle();
+        try {
+            return jniExecutor.submit(() -> nativeGetReverseDepsInProjects(h, targetLabels))
+                .get(JNI_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted during getReverseDepsInProjects", e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException) throw (RuntimeException) cause;
+            throw new RuntimeException("getReverseDepsInProjects failed", cause);
+        } catch (TimeoutException e) {
+            throw new RuntimeException("getReverseDepsInProjects timed out", e);
+        }
+    }
+
     public String[] syncIncremental(String[] changedFilePaths) {
         long h = snapshotHandle();
         try {
@@ -388,6 +405,7 @@ public final class BazelBridge {
     private native void nativeCleanCache(long handle);
     private native String[] nativeGetPendingChanges(long handle);
     private native String[] nativeGetTransitiveWorkspaceDeps(long handle, String[] targetLabels);
+    private native String[] nativeGetReverseDepsInProjects(long handle, String[] targetLabels);
     private native String[] nativeSyncIncremental(long handle, String[] changedFilePaths);
     private native String nativeGetAspectBuildStats(long handle);
     private native boolean nativeIsTestTarget(long handle, String targetLabel);

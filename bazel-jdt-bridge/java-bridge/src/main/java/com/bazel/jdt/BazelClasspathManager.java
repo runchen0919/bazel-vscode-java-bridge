@@ -296,6 +296,10 @@ public class BazelClasspathManager {
      * Used by incremental sync to update only affected targets.
      */
     public static void refreshClasspathForTargets(List<String> targetLabels) {
+        refreshClasspathForTargets(targetLabels, false);
+    }
+
+    public static void refreshClasspathForTargets(List<String> targetLabels, boolean force) {
         if (targetLabels == null || targetLabels.isEmpty()) return;
         try {
             org.eclipse.core.resources.IWorkspace workspace =
@@ -321,7 +325,7 @@ public class BazelClasspathManager {
                 }
             }
             for (IProject project : affectedProjects) {
-                setMergedClasspathContainer(project);
+                setMergedClasspathContainer(project, force);
             }
         } catch (Exception e) {
             LOG.log(new Status(IStatus.ERROR, "com.bazel.jdt",

@@ -27,6 +27,10 @@
             <command id="bazel-jdt.buildTarget"/>
             <command id="bazel-jdt.setActiveDebugProject"/>
             <command id="bazel-jdt.clearActiveDebugProject"/>
+            <command id="bazel-jdt.getDependencyPackages"/>
+            <command id="bazel-jdt.createProjectForPackage"/>
+            <command id="bazel-jdt.waitForIndexesReady"/>
+            <command id="bazel-jdt.partialSync"/>
         </delegateCommandHandler>
     </extension>
 

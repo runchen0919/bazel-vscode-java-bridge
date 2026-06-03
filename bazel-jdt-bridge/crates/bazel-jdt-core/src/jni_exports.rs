@@ -903,6 +903,54 @@ pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeSyncIncremental(
 }
 
 #[no_mangle]
+pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeGetReverseDepsInProjects(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    target_labels: JObjectArray,
+) -> jobjectArray {
+    let state = match get_state(&mut env, handle) {
+        Some(s) => s,
+        None => return std::ptr::null_mut(),
+    };
+
+    let labels = match parse_java_string_array(&mut env, &target_labels) {
+        Some(l) => l,
+        None => {
+            return match create_string_array(&mut env, &[]) {
+                Ok(arr) => arr,
+                Err(_) => std::ptr::null_mut(),
+            }
+        }
+    };
+
+    let graph = state.graph.lock().unwrap_or_else(|e| e.into_inner());
+
+    let mut all_rdeps: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for label in &labels {
+        let rdeps = graph.reverse_transitive_deps(label);
+        all_rdeps.extend(rdeps);
+    }
+    for label in &labels {
+        all_rdeps.remove(label);
+    }
+
+    let mut result: Vec<String> = all_rdeps.into_iter().collect();
+    result.sort();
+
+    log::info!(
+        "Reverse deps for {} targets: {} rdep targets",
+        labels.len(),
+        result.len()
+    );
+
+    match create_string_array(&mut env, &result) {
+        Ok(arr) => arr,
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+#[no_mangle]
 pub extern "system" fn Java_com_bazel_jdt_BazelBridge_nativeGetAspectBuildStats(
     mut env: JNIEnv,
     _class: JClass,

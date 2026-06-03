@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { registerImportCommand, registerRuntimeCommands, registerAddDirectoryCommand } from './commands';
+import { registerImportCommand, registerRuntimeCommands, registerAddDirectoryCommand, registerPartialSyncCommand } from './commands';
 import { BazelDebugConfigurationProvider } from './debugAdapter';
 import { createStatusBar } from './statusBar';
 import { getConfig } from './config';
@@ -36,6 +36,7 @@ function activateFull(context: vscode.ExtensionContext, workspaceRoot: string) {
     registerImportCommand(context);
     registerRuntimeCommands(context);
     registerAddDirectoryCommand(context, workspaceRoot);
+    registerPartialSyncCommand(context);
     context.subscriptions.push(
         vscode.debug.registerDebugConfigurationProvider(
             'java', new BazelDebugConfigurationProvider()
